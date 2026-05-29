@@ -652,6 +652,128 @@ function Overview({ documents, collections }: { documents: DocumentItem[]; colle
   );
 }
 
+function blockKey(pageNo: number, blockId: string) {
+  return `${pageNo}:${blockId}`;
+}
+
+function OcrPageSurface({
+  page,
+  zoom,
+  selectedPageNo,
+  selectedBlock,
+  onSelectPage,
+  onSelectBlock,
+  containerRef,
+}: {
+  page: OcrPage;
+  zoom: number;
+  selectedPageNo: number;
+  selectedBlock: OcrBlock | null;
+  onSelectPage: (pageNo: number) => void;
+  onSelectBlock: (block: OcrBlock) => void;
+  containerRef: (node: HTMLDivElement | null) => void;
+}) {
+  const [renderMetrics, setRenderMetrics] = useState<PageRenderMetrics | null>(null);
+  const [pageLoading, setPageLoading] = useState(Boolean(page.file_url || page.image_url));
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const surfaceWidth = page.width ?? 900;
+  const surfaceHeight = page.height ?? 1200;
+
+  useEffect(() => {
+    setRenderMetrics(null);
+    setPageLoading(Boolean(page.file_url || page.image_url));
+  }, [page.page_no, page.file_url, page.image_url]);
+
+  useEffect(() => {
+    const el = surfaceRef.current;
+    if (!el) return;
+    if (renderMetrics) {
+      el.style.width = `${renderMetrics.width}px`;
+      el.style.height = `${renderMetrics.height}px`;
+    } else if (!page.image_url && !page.file_url) {
+      el.style.width = `${surfaceWidth}px`;
+      el.style.height = `${surfaceHeight}px`;
+    } else {
+      el.style.width = "auto";
+      el.style.height = "auto";
+    }
+  }, [renderMetrics, surfaceWidth, surfaceHeight, page.image_url, page.file_url]);
+
+  return (
+    <div
+      className={`page-surface-wrap ${selectedPageNo === page.page_no ? "is-current" : ""}`}
+      ref={containerRef}
+      data-page-no={page.page_no}
+    >
+      <div className="page-surface-label">第 {page.page_no} 页</div>
+      <div className="page-surface" ref={surfaceRef} style={{ zoom }}>
+        {(page.image_url || page.file_url) && (
+          <PageBackground
+            fileUrl={page.image_url || page.file_url || ""}
+            pageNo={page.page_no}
+            targetWidth={surfaceWidth}
+            targetHeight={surfaceHeight}
+            onMetrics={setRenderMetrics}
+            onLoaded={() => setPageLoading(false)}
+            preferImage={Boolean(page.image_url)}
+          />
+        )}
+        {!pageLoading &&
+          page.blocks.map((block) => {
+            const [x1, y1, x2, y2] = block.bbox;
+            const active = selectedBlock?.id === block.id && selectedPageNo === page.page_no;
+            const effectiveSurfaceWidth = renderMetrics?.width ?? surfaceWidth;
+            const effectiveSurfaceHeight = renderMetrics?.height ?? surfaceHeight;
+            const rect = mapBboxToSurface(
+              [x1, y1, x2, y2],
+              surfaceWidth,
+              surfaceHeight,
+              effectiveSurfaceWidth,
+              effectiveSurfaceHeight,
+              renderMetrics,
+            );
+            return (
+              <button
+                key={blockKey(page.page_no, block.id)}
+                className={`ocr-box ${block.type} ${active ? "active" : ""}`}
+                style={{
+                  left: rect.left,
+                  top: rect.top,
+                  width: rect.width,
+                  height: rect.height,
+                }}
+                onClick={() => {
+                  onSelectPage(page.page_no);
+                  onSelectBlock(block);
+                }}
+                title={resolveBlockText(block)}
+              >
+                {block.type}
+              </button>
+            );
+          })}
+      </div>
+    </div>
+  );
+}
+
+function firstBlockOfPage(pages: OcrPage[], pageNo: number): OcrBlock | null {
+  const page = pages.find((item) => item.page_no === pageNo);
+  if (!page?.blocks.length) return null;
+  return page.blocks.find((block) => resolveBlockText(block).length > 0) ?? page.blocks[0] ?? null;
+}
+
+function selectPageWithFirstBlock(
+  pages: OcrPage[],
+  pageNo: number,
+  onSelectPage: (pageNo: number) => void,
+  onSelectBlock: (block: OcrBlock) => void,
+) {
+  onSelectPage(pageNo);
+  const firstBlock = firstBlockOfPage(pages, pageNo);
+  if (firstBlock) onSelectBlock(firstBlock);
+}
+
 function OcrView(props: {
   pages: OcrPage[];
   selectedPage?: OcrPage;
@@ -661,40 +783,77 @@ function OcrView(props: {
   onSelectBlock: (block: OcrBlock) => void;
 }) {
   const page = props.selectedPage;
-  const [renderMetrics, setRenderMetrics] = useState<PageRenderMetrics | null>(null);
-  const [pageLoading, setPageLoading] = useState(false);
   const [zoom, setZoom] = useState(0.84);
-
-  useEffect(() => {
-    setRenderMetrics(null);
-    setPageLoading(Boolean(page?.file_url || page?.image_url));
-  }, [page?.page_no]);
-
-  const surfaceWidth = page?.width ?? 900;
-  const surfaceHeight = page?.height ?? 1200;
-  const sourceWidth = page?.width ?? 900;
-  const sourceHeight = page?.height ?? 1200;
   const currentIndex = page ? props.pages.findIndex((item) => item.page_no === page.page_no) : -1;
 
-  const surfaceRef = React.useRef<HTMLDivElement>(null);
+  const stageScrollRef = useRef<HTMLDivElement>(null);
+  const pageSurfaceRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const pageChangeSourceRef = useRef<"scroll" | null>(null);
+  const markdownClickGuardUntilRef = useRef(0);
+  const selectedPageNoRef = useRef(page?.page_no ?? 1);
+  selectedPageNoRef.current = page?.page_no ?? 1;
+
+  const markMarkdownClick = () => {
+    markdownClickGuardUntilRef.current = Date.now() + 700;
+  };
+
+  const isMarkdownClickGuarded = () => Date.now() < markdownClickGuardUntilRef.current;
+
+  const scrollToPage = (pageNo: number, behavior: ScrollBehavior = "smooth") => {
+    pageSurfaceRefs.current[pageNo]?.scrollIntoView({ behavior, block: "start" });
+  };
+
   useEffect(() => {
-    const el = surfaceRef.current;
-    if (!el) return;
-    if (renderMetrics) {
-      el.style.width = `${renderMetrics.width}px`;
-      el.style.height = `${renderMetrics.height}px`;
-    } else if (!page?.image_url && !page?.file_url) {
-      el.style.width = `${surfaceWidth}px`;
-      el.style.height = `${surfaceHeight}px`;
-    } else {
-      el.style.width = "auto";
-      el.style.height = "auto";
+    if (pageChangeSourceRef.current === "scroll") {
+      pageChangeSourceRef.current = null;
+      return;
     }
-  }, [renderMetrics, surfaceWidth, surfaceHeight, page?.image_url, page?.file_url]);
+    if (page?.page_no) scrollToPage(page.page_no, "smooth");
+  }, [page?.page_no]);
+
+  useEffect(() => {
+    const container = stageScrollRef.current;
+    if (!container || props.pages.length === 0) return;
+
+    let observer: IntersectionObserver | null = null;
+    const frameId = window.requestAnimationFrame(() => {
+      observer = new IntersectionObserver(
+        (entries) => {
+          const best = entries
+            .filter((entry) => entry.isIntersecting)
+            .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+          if (!best) return;
+
+          const pageNo = Number((best.target as HTMLElement).dataset.pageNo);
+          if (!pageNo || pageNo === selectedPageNoRef.current) return;
+          if (isMarkdownClickGuarded()) return;
+
+          pageChangeSourceRef.current = "scroll";
+          selectPageWithFirstBlock(props.pages, pageNo, props.onSelectPage, props.onSelectBlock);
+        },
+        { root: container, threshold: [0.2, 0.35, 0.5, 0.65, 0.8] },
+      );
+
+      props.pages.forEach((item) => {
+        const el = pageSurfaceRefs.current[item.page_no];
+        if (el) observer?.observe(el);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      observer?.disconnect();
+    };
+  }, [props.pages, props.onSelectPage, props.onSelectBlock]);
 
   function goPage(delta: number) {
     const next = props.pages[currentIndex + delta];
-    if (next) props.onSelectPage(next.page_no);
+    if (!next) return;
+    selectPageWithFirstBlock(props.pages, next.page_no, props.onSelectPage, props.onSelectBlock);
+  }
+
+  function handleRailPageClick(pageNo: number) {
+    selectPageWithFirstBlock(props.pages, pageNo, props.onSelectPage, props.onSelectBlock);
   }
 
   return (
@@ -711,7 +870,7 @@ function OcrView(props: {
             <button
               className={page?.page_no === item.page_no ? "mineru-page-button active" : "mineru-page-button"}
               key={item.page_no}
-              onClick={() => props.onSelectPage(item.page_no)}
+              onClick={() => handleRailPageClick(item.page_no)}
             >
               <FileText size={15} />
               第 {item.page_no} 页
@@ -745,50 +904,23 @@ function OcrView(props: {
           </div>
         </div>
 
-        <div className="mineru-stage-scroll">
-          {page ? (
-            <div className="page-surface" ref={surfaceRef}>
-              {(page.image_url || page.file_url) && (
-                <PageBackground
-                  fileUrl={page.image_url || page.file_url || ""}
-                  pageNo={page.page_no}
-                  targetWidth={surfaceWidth}
-                  targetHeight={surfaceHeight}
-                  onMetrics={setRenderMetrics}
-                  onLoaded={() => setPageLoading(false)}
-                  preferImage={Boolean(page.image_url)}
+        <div className="mineru-stage-scroll" ref={stageScrollRef}>
+          {props.pages.length > 0 ? (
+            <div className="page-stack">
+              {props.pages.map((pageItem) => (
+                <OcrPageSurface
+                  key={pageItem.page_no}
+                  page={pageItem}
+                  zoom={zoom}
+                  selectedPageNo={page?.page_no ?? 1}
+                  selectedBlock={props.selectedBlock}
+                  onSelectPage={props.onSelectPage}
+                  onSelectBlock={props.onSelectBlock}
+                  containerRef={(node) => {
+                    pageSurfaceRefs.current[pageItem.page_no] = node;
+                  }}
                 />
-              )}
-              {!pageLoading && page.blocks.map((block) => {
-                const [x1, y1, x2, y2] = block.bbox;
-                const active = props.selectedBlock?.id === block.id;
-                const effectiveSurfaceWidth = renderMetrics?.width ?? surfaceWidth;
-                const effectiveSurfaceHeight = renderMetrics?.height ?? surfaceHeight;
-                const rect = mapBboxToSurface(
-                  [x1, y1, x2, y2],
-                  sourceWidth,
-                  sourceHeight,
-                  effectiveSurfaceWidth,
-                  effectiveSurfaceHeight,
-                  renderMetrics,
-                );
-                return (
-                  <button
-                    key={block.id}
-                    className={`ocr-box ${block.type} ${active ? "active" : ""}`}
-                    style={{
-                      left: rect.left,
-                      top: rect.top,
-                      width: rect.width,
-                      height: rect.height,
-                    }}
-                    onClick={() => props.onSelectBlock(block)}
-                    title={block.text}
-                  >
-                    {block.type}
-                  </button>
-                );
-              })}
+              ))}
             </div>
           ) : (
             <EmptyState text="没有 OCR 页面数据" />
@@ -803,6 +935,8 @@ function OcrView(props: {
         nativeResult={props.nativeResult}
         onSelectBlock={props.onSelectBlock}
         onSelectPage={props.onSelectPage}
+        onMarkdownBlockClick={markMarkdownClick}
+        markdownClickGuardUntilRef={markdownClickGuardUntilRef}
       />
     </section>
   );
@@ -815,10 +949,6 @@ type MarkdownBlockItem = {
   variant: "meta" | "title" | "section" | "body" | "table" | "formula";
 };
 
-function blockKey(pageNo: number, blockId: string) {
-  return `${pageNo}:${blockId}`;
-}
-
 function MarkdownResultPanel({
   pages,
   selectedPageNo,
@@ -826,6 +956,8 @@ function MarkdownResultPanel({
   nativeResult,
   onSelectBlock,
   onSelectPage,
+  onMarkdownBlockClick,
+  markdownClickGuardUntilRef,
 }: {
   pages: OcrPage[];
   selectedPageNo: number;
@@ -833,11 +965,13 @@ function MarkdownResultPanel({
   nativeResult: Record<string, unknown> | null;
   onSelectBlock: (block: OcrBlock) => void;
   onSelectPage: (pageNo: number) => void;
+  onMarkdownBlockClick: () => void;
+  markdownClickGuardUntilRef: React.MutableRefObject<number>;
 }) {
   const [resultTab, setResultTab] = useState<"markdown" | "json">("markdown");
   const [copyHint, setCopyHint] = useState("");
   const blockRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const pendingMarkdownClickRef = useRef<{ pageNo: number; blockId: string } | null>(null);
+  const markdownPreviewRef = useRef<HTMLDivElement>(null);
 
   const mdBlocks = useMemo(() => collectMarkdownBlocks(pages), [pages]);
   const fullMarkdown = useMemo(() => {
@@ -852,44 +986,42 @@ function MarkdownResultPanel({
 
   // #region agent log
   useEffect(() => {
-    const idCounts = mdBlocks.reduce<Record<string, number>>((counts, item) => {
-      counts[item.block.id] = (counts[item.block.id] ?? 0) + 1;
-      return counts;
-    }, {});
-    const duplicateIds = Object.entries(idCounts).filter(([, count]) => count > 1).length;
+    const firstBlock = firstBlockOfPage(pages, selectedPageNo);
     fetch("http://127.0.0.1:7837/ingest/ccefa4c6-daa7-4883-8e5b-ede288b2180e", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "eb7c4d" },
       body: JSON.stringify({
         sessionId: "eb7c4d",
-        runId: "scroll-fix",
-        hypothesisId: "A-B",
+        runId: "page-sync",
+        hypothesisId: "sync",
         location: "main.tsx:MarkdownResultPanel",
-        message: "scroll target resolution",
+        message: "page block sync scroll",
         data: {
-          mdBlocksCount: mdBlocks.length,
-          duplicateBlockIds: duplicateIds,
           selectedPageNo,
           selectedBlockId: selectedBlock?.id ?? null,
+          firstBlockId: firstBlock?.id ?? null,
           scrollKey: selectedBlock?.id ? blockKey(selectedPageNo, selectedBlock.id) : null,
           refExists: selectedBlock?.id ? Boolean(blockRefs.current[blockKey(selectedPageNo, selectedBlock.id)]) : false,
         },
         timestamp: Date.now(),
       }),
     }).catch(() => {});
-  }, [mdBlocks, selectedBlock?.id, selectedPageNo]);
+  }, [pages, selectedBlock?.id, selectedPageNo]);
   // #endregion
+
+  function scrollMarkdownBlockToTop(pageNo: number, blockId: string) {
+    const container = markdownPreviewRef.current;
+    const el = blockRefs.current[blockKey(pageNo, blockId)];
+    if (!container || !el) return;
+    const top = el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+    container.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  }
 
   useEffect(() => {
     if (!selectedBlock?.id) return;
-    const pending = pendingMarkdownClickRef.current;
-    if (pending && pending.pageNo === selectedPageNo && pending.blockId === selectedBlock.id) {
-      pendingMarkdownClickRef.current = null;
-      return;
-    }
-    const key = blockKey(selectedPageNo, selectedBlock.id);
-    blockRefs.current[key]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [selectedBlock?.id, selectedPageNo]);
+    if (Date.now() < markdownClickGuardUntilRef.current) return;
+    scrollMarkdownBlockToTop(selectedPageNo, selectedBlock.id);
+  }, [selectedBlock?.id, selectedPageNo, markdownClickGuardUntilRef]);
 
   async function handleCopy() {
     const text = resultTab === "markdown" ? fullMarkdown : jsonText;
@@ -903,7 +1035,7 @@ function MarkdownResultPanel({
   }
 
   function handleBlockClick(item: MarkdownBlockItem) {
-    pendingMarkdownClickRef.current = { pageNo: item.pageNo, blockId: item.block.id };
+    onMarkdownBlockClick();
     onSelectPage(item.pageNo);
     onSelectBlock(item.block);
   }
@@ -922,7 +1054,7 @@ function MarkdownResultPanel({
         </button>
       </div>
       {resultTab === "markdown" ? (
-        <div className="markdown-preview">
+        <div className="markdown-preview" ref={markdownPreviewRef}>
           {mdBlocks.length === 0 ? (
             extractNativeMarkdown(nativeResult) ? (
               <div className="markdown-full-doc">

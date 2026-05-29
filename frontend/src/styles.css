@@ -418,6 +418,34 @@ th {
   height: auto;
 }
 
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 36px;
+  width: 100%;
+}
+
+.page-surface-wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  scroll-margin-top: 18px;
+}
+
+.page-surface-wrap.is-current .page-surface-label {
+  color: #1d4ed8;
+}
+
+.page-surface-label {
+  margin-bottom: 10px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
 .page-background-canvas,
 .page-background-image {
   position: absolute;
@@ -647,6 +675,7 @@ th {
   min-width: 0;
   overflow: auto;
   padding: 28px 28px 72px;
+  overscroll-behavior: contain;
 }
 
 .mineru-result-panel {
@@ -677,7 +706,7 @@ th {
   background: transparent;
   color: #64748b;
   padding: 0 14px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   cursor: pointer;
 }
@@ -714,8 +743,9 @@ th {
   min-height: 0;
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 16px;
   color: #333333;
-  line-height: 1.7;
+  line-height: 1.75;
 }
 
 .markdown-preview::-webkit-scrollbar {
@@ -732,14 +762,14 @@ th {
 }
 
 .markdown-full-doc {
-  font-size: 14px;
-  line-height: 1.75;
+  font-size: 16px;
+  line-height: 1.8;
   color: #333333;
 }
 
 .md-empty {
   color: #94a3b8;
-  font-size: 14px;
+  font-size: 15px;
   text-align: center;
   padding: 48px 0;
 }
@@ -765,8 +795,8 @@ th {
 
 .md-doc-block.variant-meta .md-doc-body {
   color: #999999;
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 14px;
+  line-height: 1.65;
   margin-bottom: 12px;
 }
 
@@ -777,7 +807,7 @@ th {
 .md-doc-block.variant-section .md-doc-body,
 .md-doc-block.variant-body .md-doc-body {
   margin: 10px 0;
-  font-size: 14px;
+  font-size: 16px;
   text-align: justify;
 }
 
@@ -788,7 +818,7 @@ th {
 .md-doc-block .md-h1,
 .md-doc-block .md-doc-body h1 {
   margin: 0 0 8px;
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 700;
   color: #111827;
   line-height: 1.4;
@@ -797,7 +827,7 @@ th {
 .md-doc-block .md-h2,
 .md-doc-block .md-doc-body h2 {
   margin: 0 0 10px;
-  font-size: 17px;
+  font-size: 20px;
   font-weight: 700;
   color: #1f2937;
   line-height: 1.45;
@@ -806,7 +836,7 @@ th {
 .md-doc-block .md-h3,
 .md-doc-block .md-doc-body h3 {
   margin: 0 0 8px;
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 700;
   color: #374151;
   line-height: 1.45;
@@ -815,9 +845,9 @@ th {
 .md-doc-block .md-p,
 .md-doc-block .md-doc-body p {
   margin: 0;
-  font-size: 14px;
+  font-size: 16px;
   color: #333333;
-  line-height: 1.75;
+  line-height: 1.8;
 }
 
 .md-doc-block .md-doc-body strong {
@@ -833,7 +863,7 @@ th {
 .md-doc-block .md-doc-body table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .md-doc-block .md-table th,
@@ -857,8 +887,8 @@ th {
   background: #0f172a;
   color: #d1d5db;
   padding: 18px;
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.6;
   height: 100%;
   box-sizing: border-box;
 }
