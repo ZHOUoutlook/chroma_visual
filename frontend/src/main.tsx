@@ -2,8 +2,9 @@ import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls, Html } from "@react-three/drei";
+import { OrbitControls, Html, Line } from "@react-three/drei";
 import * as pdfjsLib from "pdfjs-dist";
 import {
   Boxes,
@@ -269,6 +270,8 @@ function App() {
   const [nativeResult, setNativeResult] = useState<Record<string, unknown> | null>(null);
   const [selectedPageNo, setSelectedPageNo] = useState(1);
   const [selectedBlock, setSelectedBlock] = useState<OcrBlock | null>(null);
+  const pendingChunkTargetRef = useRef<{ block: OcrBlock; pageNo: number; deferScroll?: boolean } | null>(null);
+  const [pendingVersion, setPendingVersion] = useState(0);
   const [chunks, setChunks] = useState<Chunk[]>([]);
   const [selectedPoint, setSelectedPoint] = useState<Point3D | null>(null);
   const [query, setQuery] = useState("什么是向量数据库？");
@@ -520,9 +523,11 @@ function App() {
             nativeResult={nativeResult}
             onSelectPage={setSelectedPageNo}
             onSelectBlock={setSelectedBlock}
+            pendingChunkTargetRef={pendingChunkTargetRef}
+            pendingVersion={pendingVersion}
           />
         )}
-        {activeView === "chunks" && <ChunkView chunks={chunks} onSelectChunkId={(id) => focusChunk(id, pages, setSelectedPageNo, setSelectedBlock, setActiveView)} />}
+        {activeView === "chunks" && <ChunkView chunks={chunks} onSelectChunkId={(id) => focusChunk(id, pages, setSelectedPageNo, setSelectedBlock, setActiveView, pendingChunkTargetRef, setPendingVersion)} />}
         {activeView === "chroma" && <ChromaView records={records} points={points} onSelectPoint={setSelectedPoint} />}
         {activeView === "space" && (
           <VectorSpace points={points} selectedPoint={selectedPoint} highlightedIds={highlightedIds} queryResult={queryResult} onSelectPoint={setSelectedPoint} />
@@ -656,7 +661,7 @@ function blockKey(pageNo: number, blockId: string) {
   return `${pageNo}:${blockId}`;
 }
 
-function OcrPageSurface({
+function LazyPageSurface({
   page,
   zoom,
   selectedPageNo,
@@ -664,6 +669,9 @@ function OcrPageSurface({
   onSelectPage,
   onSelectBlock,
   containerRef,
+  onPageReady,
+  onActivate,
+  pendingVersion,
 }: {
   page: OcrPage;
   zoom: number;
@@ -672,17 +680,137 @@ function OcrPageSurface({
   onSelectPage: (pageNo: number) => void;
   onSelectBlock: (block: OcrBlock) => void;
   containerRef: (node: HTMLDivElement | null) => void;
+  onPageReady?: (pageNo: number) => void;
+  onActivate?: () => void;
+  pendingVersion?: number;
+}) {
+  const [activate, setActivate] = useState(page.page_no <= 3);
+  const placeholderRef = useRef<HTMLDivElement | null>(null);
+  const activatedRef = useRef(activate);
+  const prevActivate = useRef(activate);
+
+  useEffect(() => {
+    if (page.page_no <= 3) {
+      setActivate(true);
+      activatedRef.current = true;
+    }
+  }, [page.page_no]);
+
+  useEffect(() => {
+    if (page.page_no === selectedPageNo) {
+      setActivate(true);
+      activatedRef.current = true;
+    }
+  }, [selectedPageNo, page.page_no]);
+
+  useEffect(() => {
+    if (activate && !prevActivate.current) {
+      onActivate?.();
+    }
+    prevActivate.current = activate;
+  }, [activate]);
+
+  useEffect(() => {
+    if (activate) return;
+    const el = placeholderRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          activatedRef.current = true;
+          setActivate(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "800px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [activate, page.page_no]);
+
+  if (activate) {
+    return (
+      <OcrPageSurface
+        page={page}
+        zoom={zoom}
+        selectedPageNo={selectedPageNo}
+        selectedBlock={selectedBlock}
+        onSelectPage={onSelectPage}
+        onSelectBlock={onSelectBlock}
+        containerRef={containerRef}
+        onPageReady={onPageReady}
+        pendingVersion={pendingVersion}
+      />
+    );
+  }
+
+  const estHeight = page.height && page.width
+    ? Math.min((page.height / page.width) * 760, 2000)
+    : 800;
+
+  return (
+    <div
+      ref={(node) => {
+        placeholderRef.current = node;
+        containerRef(node);
+      }}
+      data-page-no={page.page_no}
+      className="page-surface-wrap page-surface-lazy"
+      style={{ height: `${estHeight}px` }}
+    >
+      <div className="page-surface-label">第 {page.page_no} 页</div>
+      <div className="page-surface-skeleton">
+        <Loader2 size={20} className="skeleton-spinner" />
+      </div>
+    </div>
+  );
+}
+
+function OcrPageSurface({
+  page,
+  zoom,
+  selectedPageNo,
+  selectedBlock,
+  onSelectPage,
+  onSelectBlock,
+  containerRef,
+  onPageReady,
+  pendingVersion,
+}: {
+  page: OcrPage;
+  zoom: number;
+  selectedPageNo: number;
+  selectedBlock: OcrBlock | null;
+  onSelectPage: (pageNo: number) => void;
+  onSelectBlock: (block: OcrBlock) => void;
+  containerRef: (node: HTMLDivElement | null) => void;
+  onPageReady?: (pageNo: number) => void;
+  pendingVersion?: number;
 }) {
   const [renderMetrics, setRenderMetrics] = useState<PageRenderMetrics | null>(null);
   const [pageLoading, setPageLoading] = useState(Boolean(page.file_url || page.image_url));
   const surfaceRef = useRef<HTMLDivElement>(null);
   const surfaceWidth = page.width ?? 900;
   const surfaceHeight = page.height ?? 1200;
+  const readyFiredRef = useRef(false);
 
   useEffect(() => {
     setRenderMetrics(null);
     setPageLoading(Boolean(page.file_url || page.image_url));
+    readyFiredRef.current = false;
   }, [page.page_no, page.file_url, page.image_url]);
+
+  useEffect(() => {
+    readyFiredRef.current = false;
+  }, [pendingVersion]);
+
+  useEffect(() => {
+    if (!pageLoading && !readyFiredRef.current) {
+      readyFiredRef.current = true;
+      onPageReady?.(page.page_no);
+    }
+  }, [pageLoading, pendingVersion]);
 
   useEffect(() => {
     const el = surfaceRef.current;
@@ -781,9 +909,12 @@ function OcrView(props: {
   nativeResult: Record<string, unknown> | null;
   onSelectPage: (pageNo: number) => void;
   onSelectBlock: (block: OcrBlock) => void;
+  pendingChunkTargetRef?: React.MutableRefObject<{ block: OcrBlock; pageNo: number; deferScroll?: boolean } | null>;
+  pendingVersion?: number;
 }) {
   const page = props.selectedPage;
   const [zoom, setZoom] = useState(0.84);
+  const [lazyVersion, setLazyVersion] = useState(0);
   const currentIndex = page ? props.pages.findIndex((item) => item.page_no === page.page_no) : -1;
 
   const stageScrollRef = useRef<HTMLDivElement>(null);
@@ -793,11 +924,26 @@ function OcrView(props: {
   const selectedPageNoRef = useRef(page?.page_no ?? 1);
   selectedPageNoRef.current = page?.page_no ?? 1;
 
+  const navigationGuardUntilRef = useRef(0);
+
   const markMarkdownClick = () => {
     markdownClickGuardUntilRef.current = Date.now() + 700;
   };
 
   const isMarkdownClickGuarded = () => Date.now() < markdownClickGuardUntilRef.current;
+  const isNavigationGuarded = () => Date.now() < navigationGuardUntilRef.current;
+
+  const handlePageReady = (pageNo: number) => {
+    const ref = props.pendingChunkTargetRef;
+    if (!ref) return;
+    const pending = ref.current;
+    if (pending && pending.pageNo === pageNo) {
+      ref.current = null;
+      navigationGuardUntilRef.current = Date.now() + 800;
+      scrollToPage(pageNo, "smooth");
+      props.onSelectBlock(pending.block);
+    }
+  };
 
   const scrollToPage = (pageNo: number, behavior: ScrollBehavior = "smooth") => {
     pageSurfaceRefs.current[pageNo]?.scrollIntoView({ behavior, block: "start" });
@@ -808,7 +954,14 @@ function OcrView(props: {
       pageChangeSourceRef.current = null;
       return;
     }
-    if (page?.page_no) scrollToPage(page.page_no, "smooth");
+    if (page?.page_no) {
+      const pending = props.pendingChunkTargetRef?.current;
+      if (pending?.deferScroll && pending.pageNo === page.page_no) {
+        return;
+      }
+      navigationGuardUntilRef.current = Date.now() + 800;
+      scrollToPage(page.page_no, "smooth");
+    }
   }, [page?.page_no]);
 
   useEffect(() => {
@@ -827,6 +980,7 @@ function OcrView(props: {
           const pageNo = Number((best.target as HTMLElement).dataset.pageNo);
           if (!pageNo || pageNo === selectedPageNoRef.current) return;
           if (isMarkdownClickGuarded()) return;
+          if (isNavigationGuarded()) return;
 
           pageChangeSourceRef.current = "scroll";
           selectPageWithFirstBlock(props.pages, pageNo, props.onSelectPage, props.onSelectBlock);
@@ -844,15 +998,17 @@ function OcrView(props: {
       window.cancelAnimationFrame(frameId);
       observer?.disconnect();
     };
-  }, [props.pages, props.onSelectPage, props.onSelectBlock]);
+  }, [props.pages, props.onSelectPage, props.onSelectBlock, lazyVersion]);
 
   function goPage(delta: number) {
     const next = props.pages[currentIndex + delta];
     if (!next) return;
+    navigationGuardUntilRef.current = Date.now() + 800;
     selectPageWithFirstBlock(props.pages, next.page_no, props.onSelectPage, props.onSelectBlock);
   }
 
   function handleRailPageClick(pageNo: number) {
+    navigationGuardUntilRef.current = Date.now() + 800;
     selectPageWithFirstBlock(props.pages, pageNo, props.onSelectPage, props.onSelectBlock);
   }
 
@@ -908,7 +1064,7 @@ function OcrView(props: {
           {props.pages.length > 0 ? (
             <div className="page-stack">
               {props.pages.map((pageItem) => (
-                <OcrPageSurface
+                <LazyPageSurface
                   key={pageItem.page_no}
                   page={pageItem}
                   zoom={zoom}
@@ -919,6 +1075,9 @@ function OcrView(props: {
                   containerRef={(node) => {
                     pageSurfaceRefs.current[pageItem.page_no] = node;
                   }}
+                  onPageReady={handlePageReady}
+                  onActivate={() => setLazyVersion((v) => v + 1)}
+                  pendingVersion={props.pendingVersion}
                 />
               ))}
             </div>
@@ -1058,7 +1217,7 @@ function MarkdownResultPanel({
           {mdBlocks.length === 0 ? (
             extractNativeMarkdown(nativeResult) ? (
               <div className="markdown-full-doc">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={markdownComponents}>
                   {extractNativeMarkdown(nativeResult) ?? ""}
                 </ReactMarkdown>
               </div>
@@ -1079,7 +1238,7 @@ function MarkdownResultPanel({
                 onClick={() => handleBlockClick(item)}
               >
                 <div className="md-doc-body">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={markdownComponents}>
                     {item.markdown}
                   </ReactMarkdown>
                 </div>
@@ -1148,6 +1307,16 @@ function PageBackground({
   return <div className="page-background-placeholder">无法直接预览此文件</div>;
 }
 
+const pdfDocCache = new Map<string, Promise<pdfjsLib.PDFDocumentProxy>>();
+
+function getPdfDocument(url: string): Promise<pdfjsLib.PDFDocumentProxy> {
+  const cached = pdfDocCache.get(url);
+  if (cached) return cached;
+  const promise = pdfjsLib.getDocument(url).promise;
+  pdfDocCache.set(url, promise);
+  return promise;
+}
+
 function PdfPageCanvas({
   url,
   pageNo,
@@ -1175,7 +1344,7 @@ function PdfPageCanvas({
       if (!canvas) return;
       setError("");
       try {
-        const pdf = await pdfjsLib.getDocument(url).promise;
+        const pdf = await getPdfDocument(url);
         const page = await pdf.getPage(Math.min(pageNo, pdf.numPages));
         const baseViewport = page.getViewport({ scale: 1 });
         const containerWidth = Math.min(canvas.parentElement?.parentElement?.clientWidth || targetWidth, 760);
@@ -1233,16 +1402,33 @@ function PdfPageCanvas({
 }
 
 function ChunkView({ chunks, onSelectChunkId }: { chunks: Chunk[]; onSelectChunkId: (id: string) => void }) {
+  const COLUMNS = 5;
+  const columns = useMemo(() => {
+    const cols: Chunk[][] = Array.from({ length: COLUMNS }, () => []);
+    const heights = new Array(COLUMNS).fill(0);
+    chunks.forEach((chunk) => {
+      const h = Math.max(80, chunk.text.length * 0.35 + 60);
+      const shortest = heights.indexOf(Math.min(...heights));
+      cols[shortest].push(chunk);
+      heights[shortest] += h;
+    });
+    return cols;
+  }, [chunks]);
+
   return (
     <section className="panel">
       <h2>Chunk 切分</h2>
-      <div className="chunk-grid">
-        {chunks.map((chunk) => (
-          <button className="chunk-card" key={chunk.id} onClick={() => onSelectChunkId(chunk.id)}>
-            <strong>{chunk.id}</strong>
-            <p>{chunk.text}</p>
-            <span>{String(chunk.metadata.source ?? "unknown")} · page {String(chunk.metadata.page ?? "-")}</span>
-          </button>
+      <div className="chunk-masonry">
+        {columns.map((col, ci) => (
+          <div className="chunk-masonry-col" key={ci}>
+            {col.map((chunk) => (
+              <button className="chunk-card" key={chunk.id} onClick={() => onSelectChunkId(chunk.id)}>
+                <strong>{chunk.id}</strong>
+                <p>{chunk.text}</p>
+                <span>{String(chunk.metadata.source ?? "unknown")} · page {String(chunk.metadata.page ?? "-")}</span>
+              </button>
+            ))}
+          </div>
         ))}
       </div>
     </section>
@@ -1322,6 +1508,36 @@ function QueryView(props: {
   );
 }
 
+function CoordinateAxes() {
+  const L = 1.6;
+  const coneRadius = 0.04;
+  const coneHeight = 0.1;
+
+  return (
+    <group>
+      {/* Axis lines */}
+      <Line points={[[0, 0, 0], [L, 0, 0]]} color="#ef4444" lineWidth={1} />
+      <Line points={[[0, 0, 0], [0, L, 0]]} color="#22c55e" lineWidth={1} />
+      <Line points={[[0, 0, 0], [0, 0, L]]} color="#3b82f6" lineWidth={1} />
+
+      {/* Arrowheads */}
+      <mesh position={[L, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
+        <coneGeometry args={[coneRadius, coneHeight, 8]} />
+        <meshBasicMaterial color="#ef4444" />
+      </mesh>
+      <mesh position={[0, L, 0]}>
+        <coneGeometry args={[coneRadius, coneHeight, 8]} />
+        <meshBasicMaterial color="#22c55e" />
+      </mesh>
+      <mesh position={[0, 0, L]} rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[coneRadius, coneHeight, 8]} />
+        <meshBasicMaterial color="#3b82f6" />
+      </mesh>
+
+    </group>
+  );
+}
+
 function VectorSpace(props: {
   points: Point3D[];
   selectedPoint: Point3D | null;
@@ -1332,10 +1548,11 @@ function VectorSpace(props: {
   return (
     <section className="space-layout">
       <div className="panel three-panel">
-        <Canvas camera={{ position: [0, 0, 4], fov: 55 }}>
+        <Canvas camera={{ position: [2.8, 2.8, 3.0], up: [0, 0, 1], fov: 55 }}>
           <color attach="background" args={["#f8fafc"]} />
           <ambientLight intensity={0.7} />
           <pointLight position={[3, 4, 5]} intensity={0.7} />
+          <CoordinateAxes />
           <Suspense fallback={<Html center>加载点云</Html>}>
             <group scale={1.35}>
               {props.points.map((point) => (
@@ -1662,14 +1879,17 @@ function focusChunk(
   chunkId: string,
   pages: OcrPage[],
   setSelectedPageNo: (pageNo: number) => void,
-  setSelectedBlock: (block: OcrBlock) => void,
+  _setSelectedBlock: (block: OcrBlock) => void,
   setActiveView: (view: string) => void,
+  pendingRef: React.MutableRefObject<{ block: OcrBlock; pageNo: number; deferScroll?: boolean } | null>,
+  setPendingVersion: (updater: (v: number) => number) => void,
 ) {
   for (const page of pages) {
     const block = page.blocks.find((item) => item.chunk_ids.includes(chunkId));
     if (block) {
       setSelectedPageNo(page.page_no);
-      setSelectedBlock(block);
+      pendingRef.current = { block, pageNo: page.page_no, deferScroll: true };
+      setPendingVersion((v) => v + 1);
       setActiveView("ocr");
       return;
     }

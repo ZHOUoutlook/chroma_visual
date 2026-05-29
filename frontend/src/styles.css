@@ -23,7 +23,8 @@ button {
 .app-shell {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -33,6 +34,10 @@ button {
   padding: 18px;
   color: #e5e7eb;
   background: #172033;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .brand {
@@ -85,6 +90,8 @@ button {
   flex-direction: column;
   gap: 16px;
   padding: 20px;
+  overflow-y: auto;
+  height: 100%;
 }
 
 .topbar {
@@ -432,6 +439,37 @@ th {
   flex-direction: column;
   align-items: center;
   scroll-margin-top: 18px;
+}
+
+.page-surface-lazy {
+  justify-content: flex-start;
+}
+
+.page-surface-skeleton {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  display: grid;
+  place-items: center;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.8s ease-in-out infinite;
+}
+
+.skeleton-spinner {
+  color: #94a3b8;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 .page-surface-wrap.is-current .page-surface-label {
@@ -893,9 +931,17 @@ th {
   box-sizing: border-box;
 }
 
-.chunk-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+.chunk-masonry {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.chunk-masonry-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
@@ -1012,6 +1058,12 @@ th {
   background: #f8fafc;
 }
 
+@media (max-width: 700px) {
+  .chunk-masonry {
+    flex-direction: column;
+  }
+}
+
 @media (max-width: 980px) {
   .app-shell,
   .grid.two,
@@ -1034,8 +1086,19 @@ th {
     border: 0;
   }
 
+  .app-shell {
+    height: auto;
+    overflow: visible;
+  }
+
   .sidebar {
     position: static;
+    height: auto;
+  }
+
+  .workspace {
+    height: auto;
+    overflow-y: visible;
   }
 
   .toolbar,

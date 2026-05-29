@@ -26,6 +26,10 @@ class MineruService:
         for path in files:
             data = self._read_json(path)
             pages = self._extract_pages(data)
+            chunks_list = data.get("chunks") or data.get("result", {}).get("chunks") or []
+            total = len(chunks_list)
+            embedded = sum(1 for c in chunks_list if c.get("has_embedding"))
+            indexed = sum(1 for c in chunks_list if c.get("in_chroma"))
             documents.append(
                 {
                     "id": path.stem,
@@ -35,9 +39,9 @@ class MineruService:
                     "pages": len(pages),
                     "uploaded_at": data.get("uploaded_at", ""),
                     "ocr_status": "done",
-                    "chunk_status": "unknown",
-                    "embedding_status": "unknown",
-                    "ingest_status": "unknown",
+                    "chunk_status": str(total) if total > 0 else "0",
+                    "embedding_status": f"{embedded}/{total}" if total > 0 else "0",
+                    "ingest_status": f"{indexed}/{total}" if total > 0 else "0",
                     "error": "",
                 }
             )
@@ -165,6 +169,10 @@ class MineruService:
         page_pdf_url = parsed.get("page_pdf_url") or ""
         markdown_content = native_json.get("markdown_content") or ""
 
+        total_chunks = len(chunks)
+        embedded = sum(1 for c in chunks if c.get("has_embedding"))
+        indexed = sum(1 for c in chunks if c.get("in_chroma"))
+
         result: dict[str, Any] = {
             "document": {
                 "id": document_id,
@@ -174,9 +182,9 @@ class MineruService:
                 "pages": len(pages),
                 "uploaded_at": uploaded_at,
                 "ocr_status": "done",
-                "chunk_status": "done",
-                "embedding_status": "unknown",
-                "ingest_status": "unknown",
+                "chunk_status": str(total_chunks) if total_chunks > 0 else "0",
+                "embedding_status": f"{embedded}/{total_chunks}" if total_chunks > 0 else "0",
+                "ingest_status": f"{indexed}/{total_chunks}" if total_chunks > 0 else "0",
             },
             "file_name": native_json.get("file_name") or original_name,
             "file_type": native_json.get("file_type") or "pdf",
@@ -221,6 +229,7 @@ class MineruService:
         page_pdf_url = data.get("page_pdf_url") or ""
         page_images = data.get("page_images", {})
         pages = []
+        block_counter = 0
 
         for index, raw_page in enumerate(pdf_info, start=1):
             if raw_page.get("page_no") is not None:
@@ -245,7 +254,10 @@ class MineruService:
                 or []
             )
             flat_blocks = self._flatten_blocks(raw_blocks)
-            blocks = [self._normalize_block(block, block_index) for block_index, block in enumerate(flat_blocks)]
+            blocks = []
+            for block in flat_blocks:
+                block_counter += 1
+                blocks.append(self._normalize_block(block, block_counter))
 
             if image_url and not self._valid_page_image_shape(width, height):
                 image_url = ""
@@ -350,7 +362,7 @@ class MineruService:
         text = self._extract_block_text(block)
 
         block_id = str(block.get("id") or f"mineru_block_{index + 1:03d}")
-        chunk_id = f"mineru_chunk_{index + 1:03d}"
+        chunk_id = f"mineru_block_{index + 1:03d}"
 
         return {
             "id": block_id,
@@ -372,9 +384,9 @@ class MineruService:
                     continue
 
                 chunk_ids = block.get("chunk_ids") or []
-                if not chunk_ids:
+                chunk_id = str(chunk_ids[0]) if chunk_ids else ""
+                if not chunk_id:
                     continue
-                chunk_id = str(chunk_ids[0])
 
                 block["id"] = block.get("id") or f"mineru_block_{chunk_id.split('_')[-1]}"
 
