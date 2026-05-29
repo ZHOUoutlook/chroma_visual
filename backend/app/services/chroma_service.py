@@ -5,13 +5,15 @@ from typing import Any
 from app.config import get_settings
 from app.sample_data import SAMPLE_RECORDS
 from app.services.compat_chroma import ChromaImportError, create_http_client
+from app.services.embedding_service import EmbeddingService
 from app.services.projection import project_to_3d
 
 
 class ChromaService:
-    def __init__(self) -> None:
+    def __init__(self, embedding_svc: EmbeddingService | None = None) -> None:
         self.settings = get_settings()
         self._client = None
+        self._embedding_service = embedding_svc or EmbeddingService()
 
     def _get_client(self) -> Any | None:
         if self._client is not None:
@@ -140,8 +142,9 @@ class ChromaService:
         collection = self._get_collection(collection_name)
         if collection is not None:
             try:
+                query_embeddings = self._embedding_service.embed([query_text])
                 query_args: dict[str, Any] = {
-                    "query_texts": [query_text],
+                    "query_embeddings": query_embeddings,
                     "n_results": top_k,
                     "include": ["documents", "metadatas", "distances", "embeddings"],
                 }
@@ -163,13 +166,52 @@ class ChromaService:
         except Exception:
             return None
 
-    def add_to_collection(self, collection_name: str, ids: list[str], documents: list[str], metadatas: list[dict[str, Any]]) -> bool:
+    def get_embedded_chunk_ids(self, collection_name: str, document_id: str) -> list[str]:
+        """Return chunk IDs that have embeddings in the given collection for the given document."""
+        collection = self._get_collection(collection_name)
+        if collection is None:
+            return []
+
+        try:
+            data = collection.get(
+                where={"document_id": document_id},
+                include=["metadatas"],
+            )
+        except Exception:
+            return []
+
+        chunk_ids: set[str] = set()
+        for metadata in _safe_sequence(data.get("metadatas")):
+            if isinstance(metadata, dict):
+                cid = metadata.get("chunk_id")
+                if cid:
+                    chunk_ids.add(str(cid))
+
+        return sorted(chunk_ids)
+
+    def delete_records(self, collection_name: str, record_ids: list[str]) -> bool:
+        client = self._get_client()
+        if client is None:
+            return False
+        try:
+            collection = client.get_collection(collection_name)
+            if collection is None:
+                return False
+            collection.delete(ids=record_ids)
+            return True
+        except Exception:
+            return False
+
+    def add_to_collection(self, collection_name: str, ids: list[str], documents: list[str], metadatas: list[dict[str, Any]], embeddings: list[list[float]] | None = None) -> bool:
         client = self._get_client()
         if client is None:
             return False
         try:
             collection = client.get_or_create_collection(name=collection_name)
-            collection.add(ids=ids, documents=documents, metadatas=metadatas)
+            kwargs: dict[str, Any] = {"ids": ids, "documents": documents, "metadatas": metadatas}
+            if embeddings:
+                kwargs["embeddings"] = embeddings
+            collection.add(**kwargs)
             return True
         except Exception:
             return False

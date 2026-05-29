@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,13 +10,15 @@ from uuid import uuid4
 
 from app.config import get_settings
 from app.sample_data import SAMPLE_DOCUMENTS, SAMPLE_PAGES, SAMPLE_RECORDS
+from app.services.embedding_service import EmbeddingService
 from app.services.mineru_api import MineruApiClient, MineruApiError
 
 
 class MineruService:
-    def __init__(self) -> None:
+    def __init__(self, embedding_svc: EmbeddingService | None = None) -> None:
         self.settings = get_settings()
         self.mineru_api = MineruApiClient()
+        self.embedding_service = embedding_svc or EmbeddingService()
 
     def list_documents(self) -> list[dict[str, Any]]:
         files = self._json_files()
@@ -126,7 +129,35 @@ class MineruService:
                     return chunk
         return None
 
-    def embed_chunks(self, document_id: str, chunk_ids: list[str], chroma_svc: Any) -> dict[str, Any] | None:
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        """Split text into sentences for Chinese/English mixed content."""
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+        result: list[str] = []
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+
+            parts = re.split(r"(?<=[。！？；!?])\s*", line)
+
+            for part in parts:
+                # Replace ". Capital" or ". Chinese" period with sentinel
+                # to split English sentences without splitting decimals like 3.14
+                modified = re.sub(
+                    r"([a-zA-Z]{2,})\.(\s+)([A-Z一-鿿])",
+                    lambda m: m.group(1) + "\x00" + m.group(2) + m.group(3),
+                    part,
+                )
+                for sub in modified.split("\x00"):
+                    sub = sub.strip()
+                    if sub and len(sub) >= 2:
+                        result.append(sub)
+
+        return result
+
+    def embed_chunks(self, document_id: str, chunk_ids: list[str], collection: str, chroma_svc: Any) -> dict[str, Any] | None:
         json_path = None
         data = None
         for path in self._json_files():
@@ -144,29 +175,52 @@ class MineruService:
         to_embed: list[dict[str, Any]] = []
         skipped = 0
         not_found = 0
+
+        already_embedded = set(chroma_svc.get_embedded_chunk_ids(collection, document_id))
         for cid in chunk_ids:
             chunk = chunk_map.get(cid)
             if chunk is None:
                 not_found += 1
-            elif chunk.get("has_embedding"):
+            elif cid in already_embedded:
                 skipped += 1
             else:
                 to_embed.append(chunk)
 
+        total_sentences = 0
+        embedded_count = 0
         if to_embed:
-            ids = [c["id"] for c in to_embed]
-            documents = [c["text"] for c in to_embed]
-            metadatas = [c.get("metadata", {}) for c in to_embed]
-            success = chroma_svc.add_to_collection(document_id, ids, documents, metadatas)
-            if success:
-                for c in to_embed:
-                    c["has_embedding"] = True
-                    c["in_chroma"] = True
-                with json_path.open("w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+            all_ids: list[str] = []
+            all_documents: list[str] = []
+            all_metadatas: list[dict[str, Any]] = []
+
+            for chunk in to_embed:
+                sentences = self._split_sentences(chunk["text"])
+                chunk_meta = chunk.get("metadata", {})
+                for idx, sentence in enumerate(sentences):
+                    sentence_id = f"{document_id}_{chunk['id']}_sent_{idx:04d}"
+                    sentence_meta = {
+                        **chunk_meta,
+                        "sentence_index": idx,
+                    }
+                    all_ids.append(sentence_id)
+                    all_documents.append(sentence)
+                    all_metadatas.append(sentence_meta)
+                    total_sentences += 1
+
+            if all_ids:
+                all_embeddings = self.embedding_service.embed(all_documents)
+                success = chroma_svc.add_to_collection(collection, all_ids, all_documents, all_metadatas, all_embeddings)
+                if success:
+                    for c in to_embed:
+                        c["has_embedding"] = True
+                        c["in_chroma"] = True
+                    embedded_count = len(to_embed)
+                    with json_path.open("w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
 
         return {
-            "embedded": len(to_embed),
+            "embedded": embedded_count,
+            "sentences": total_sentences,
             "skipped": skipped,
             "not_found": not_found,
             "total": len(chunk_ids),

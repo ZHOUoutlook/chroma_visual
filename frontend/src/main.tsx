@@ -19,6 +19,7 @@ import {
   Loader2,
   RefreshCw,
   Search,
+  Trash2,
   UploadCloud,
   XCircle,
   ZoomIn,
@@ -286,6 +287,7 @@ function App() {
   const [selectedChunkIds, setSelectedChunkIds] = useState<Set<string>>(new Set());
   const [embeddingBusy, setEmbeddingBusy] = useState(false);
   const [embeddingMessage, setEmbeddingMessage] = useState("");
+  const [embeddedChunkIds, setEmbeddedChunkIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     void loadInitialData();
@@ -300,6 +302,16 @@ function App() {
     if (!selectedDocument) return;
     void loadDocument(selectedDocument);
   }, [selectedDocument]);
+
+  useEffect(() => {
+    if (!selectedCollection || !selectedDocument) {
+      setEmbeddedChunkIds(new Set());
+      return;
+    }
+    api<string[]>(`/api/chroma/collections/${selectedCollection}/embedded-chunks/${selectedDocument}`)
+      .then((ids) => setEmbeddedChunkIds(new Set(ids)))
+      .catch(() => setEmbeddedChunkIds(new Set()));
+  }, [selectedCollection, selectedDocument]);
 
   const selectedPage = useMemo(
     () => pages.find((page) => page.page_no === selectedPageNo) ?? pages[0],
@@ -406,6 +418,15 @@ function App() {
     }
   }
 
+  async function handleDeleteRecord(recordId: string) {
+    if (!selectedCollection) return;
+    await api(`/api/chroma/collections/${selectedCollection}/records`, {
+      method: "DELETE",
+      body: JSON.stringify({ ids: [recordId] }),
+    });
+    await loadCollection(selectedCollection);
+  }
+
   async function uploadDocument(file: File) {
     const formData = new FormData();
     formData.append("file", file);
@@ -466,7 +487,7 @@ function App() {
   }
 
   function handleSelectAllChunks() {
-    setSelectedChunkIds(new Set(chunks.filter((c) => !c.has_embedding).map((c) => c.id)));
+    setSelectedChunkIds(new Set(chunks.filter((c) => !embeddedChunkIds.has(c.id)).map((c) => c.id)));
   }
 
   function handleDeselectAllChunks() {
@@ -478,18 +499,24 @@ function App() {
     setEmbeddingBusy(true);
     setEmbeddingMessage("");
     try {
-      const result = await api<{ embedded: number; skipped: number; not_found: number; total: number }>(
+      const result = await api<{ embedded: number; sentences: number; skipped: number; not_found: number; total: number }>(
         `/api/documents/${selectedDocument}/embedding`,
         {
           method: "POST",
-          body: JSON.stringify({ chunk_ids: [...selectedChunkIds] }),
+          body: JSON.stringify({ chunk_ids: [...selectedChunkIds], collection: selectedCollection }),
         },
       );
       setEmbeddingMessage(
-        `已嵌入 ${result.embedded} 个，跳过 ${result.skipped} 个${result.not_found > 0 ? `，未找到 ${result.not_found} 个` : ""}`,
+        `已处理 ${result.embedded} 个 chunk，生成 ${result.sentences} 个句子向量，跳过 ${result.skipped} 个${result.not_found > 0 ? `，未找到 ${result.not_found} 个` : ""}`,
       );
       setSelectedChunkIds(new Set());
       await loadDocument(selectedDocument);
+      // Refresh embedded chunk IDs from the collection
+      if (selectedCollection) {
+        api<string[]>(`/api/chroma/collections/${selectedCollection}/embedded-chunks/${selectedDocument}`)
+          .then((ids) => setEmbeddedChunkIds(new Set(ids)))
+          .catch(() => {});
+      }
     } catch (error) {
       setEmbeddingMessage(`嵌入失败：${String(error)}`);
     } finally {
@@ -584,9 +611,10 @@ function App() {
             onEmbed={() => void handleEmbedChunks()}
             embeddingBusy={embeddingBusy}
             embeddingMessage={embeddingMessage}
+            embeddedChunkIds={embeddedChunkIds}
           />
         )}
-        {activeView === "chroma" && <ChromaView records={records} points={points} onSelectPoint={setSelectedPoint} />}
+        {activeView === "chroma" && <ChromaView records={records} points={points} onSelectPoint={setSelectedPoint} onDeleteRecord={handleDeleteRecord} />}
         {activeView === "space" && (
           <VectorSpace points={points} selectedPoint={selectedPoint} highlightedIds={highlightedIds} queryResult={queryResult} onSelectPoint={setSelectedPoint} />
         )}
@@ -1472,6 +1500,7 @@ function ChunkView({
   onEmbed,
   embeddingBusy,
   embeddingMessage,
+  embeddedChunkIds,
 }: {
   chunks: Chunk[];
   onFocusChunk: (chunk: Chunk) => void;
@@ -1482,6 +1511,7 @@ function ChunkView({
   onEmbed: () => void;
   embeddingBusy: boolean;
   embeddingMessage: string;
+  embeddedChunkIds: Set<string>;
 }) {
   const COLUMNS = 5;
   const columns = useMemo(() => {
@@ -1496,7 +1526,7 @@ function ChunkView({
     return cols;
   }, [chunks]);
 
-  const selectableCount = chunks.filter((c) => !c.has_embedding).length;
+  const selectableCount = chunks.filter((c) => !embeddedChunkIds.has(c.id)).length;
 
   return (
     <section className="panel">
@@ -1520,7 +1550,7 @@ function ChunkView({
         {columns.map((col, ci) => (
           <div className="chunk-masonry-col" key={ci}>
             {col.map((chunk) => {
-              const isEmbedded = chunk.has_embedding;
+              const isEmbedded = embeddedChunkIds.has(chunk.id);
               const isSelected = selectedIds.has(chunk.id);
               return (
                 <div
@@ -1566,18 +1596,46 @@ function ChunkView({
   );
 }
 
-function ChromaView({ records, points, onSelectPoint }: { records: RecordItem[]; points: Point3D[]; onSelectPoint: (point: Point3D) => void }) {
+function ChromaView({ records, points, onSelectPoint, onDeleteRecord }: { records: RecordItem[]; points: Point3D[]; onSelectPoint: (point: Point3D) => void; onDeleteRecord: (id: string) => void }) {
   const pointMap = useMemo(() => new Map(points.map((point) => [point.id, point])), [points]);
+  const [deleting, setDeleting] = useState<Set<string>>(new Set());
+
+  async function handleDelete(recordId: string) {
+    setDeleting((prev) => new Set(prev).add(recordId));
+    try {
+      await onDeleteRecord(recordId);
+    } finally {
+      setDeleting((prev) => {
+        const next = new Set(prev);
+        next.delete(recordId);
+        return next;
+      });
+    }
+  }
+
   return (
     <section className="split">
       <div className="panel">
         <h2>Records</h2>
         <div className="record-list">
           {records.map((record) => (
-            <button key={record.id} onClick={() => pointMap.get(record.id) && onSelectPoint(pointMap.get(record.id)!)}>
+            <button
+              className="record-content"
+              key={record.id}
+              onClick={() => pointMap.get(record.id) && onSelectPoint(pointMap.get(record.id)!)}
+            >
               <strong>{record.id}</strong>
               <span>{record.document}</span>
-              <small>{JSON.stringify(record.metadata)}</small>
+              <small>{JSON.stringify(record.metadata, Object.keys(record.metadata).sort())}</small>
+              <span
+                className="record-delete-btn"
+                role="button"
+                tabIndex={0}
+                aria-label="删除此记录"
+                onClick={(e) => { e.stopPropagation(); handleDelete(record.id); }}
+              >
+                <Trash2 size={13} />
+              </span>
             </button>
           ))}
         </div>
@@ -1585,8 +1643,17 @@ function ChromaView({ records, points, onSelectPoint }: { records: RecordItem[];
       <div className="panel">
         <h2>Embedding 摘要</h2>
         <Table
-          headers={["ID", "维度", "来源"]}
-          rows={records.map((record) => [record.id, record.embedding?.length ?? 0, String(record.metadata.source ?? "-")])}
+          headers={["来源", "记录数"]}
+          rows={(() => {
+            const counts: Record<string, number> = {};
+            records.forEach((r) => {
+              const source = String(r.metadata.source ?? "-");
+              counts[source] = (counts[source] || 0) + 1;
+            });
+            return Object.entries(counts)
+              .sort((a, b) => b[1] - a[1])
+              .map(([source, count]) => [source, String(count)]);
+          })()}
         />
       </div>
     </section>

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     mineru_poll_timeout_seconds: int = Field(default=90, alias="MINERU_POLL_TIMEOUT_SECONDS")
     mineru_poll_interval_seconds: int = Field(default=3, alias="MINERU_POLL_INTERVAL_SECONDS")
     mineru_trust_env: bool = Field(default=False, alias="MINERU_TRUST_ENV")
+    embedding_model: str = Field(default="paraphrase-multilingual-MiniLM-L12-v2", alias="EMBEDDING_MODEL")
     mineru_data_dir: Path = Field(default=Path("../data/mineru"), alias="MINERU_DATA_DIR")
     mineru_meta_dir: Path = Field(default=Path("../data/mineru_meta"), alias="MINERU_META_DIR")
     mineru_assets_dir: Path = Field(default=Path("../data/mineru_assets"), alias="MINERU_ASSETS_DIR")

@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.models import QueryRequest
 from app.services.chroma_service import ChromaService
+from app.services.embedding_service import EmbeddingService
 from app.services.mineru_api import MineruApiError
 from app.services.mineru_service import MineruService
 
@@ -22,8 +23,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-chroma_service = ChromaService()
-mineru_service = MineruService()
+embedding_service = EmbeddingService()
+chroma_service = ChromaService(embedding_service)
+mineru_service = MineruService(embedding_service)
 mineru_service.settings.upload_dir.mkdir(parents=True, exist_ok=True)
 mineru_service.settings.mineru_assets_dir.mkdir(parents=True, exist_ok=True)
 mineru_service.settings.mineru_meta_dir.mkdir(parents=True, exist_ok=True)
@@ -123,9 +125,10 @@ def get_chunk(chunk_id: str):
 @app.post("/api/documents/{document_id}/embedding")
 def embed_chunks(document_id: str, payload: dict[str, Any]):
     chunk_ids = payload.get("chunk_ids", [])
+    collection = payload.get("collection") or document_id
     if not chunk_ids:
         raise HTTPException(status_code=400, detail="No chunk_ids provided")
-    result = mineru_service.embed_chunks(document_id, chunk_ids, chroma_service)
+    result = mineru_service.embed_chunks(document_id, chunk_ids, collection, chroma_service)
     if result is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return result
@@ -149,6 +152,22 @@ def get_collection_stats(collection_name: str):
 @app.get("/api/chroma/collections/{collection_name}/records")
 def get_collection_records(collection_name: str, limit: int = 200):
     return chroma_service.get_collection_records(collection_name, limit)
+
+
+@app.delete("/api/chroma/collections/{collection_name}/records")
+def delete_collection_records(collection_name: str, payload: dict[str, Any]):
+    record_ids = payload.get("ids", [])
+    if not record_ids:
+        raise HTTPException(status_code=400, detail="No ids provided")
+    success = chroma_service.delete_records(collection_name, record_ids)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete records or Chroma unavailable")
+    return {"deleted": len(record_ids)}
+
+
+@app.get("/api/chroma/collections/{collection_name}/embedded-chunks/{document_id}")
+def get_embedded_chunk_ids(collection_name: str, document_id: str):
+    return chroma_service.get_embedded_chunk_ids(collection_name, document_id)
 
 
 @app.get("/api/chroma/collections/{collection_name}/embeddings/3d")

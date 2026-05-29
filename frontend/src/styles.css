@@ -958,7 +958,41 @@ th {
   position: relative;
 }
 
+.record-content {
+  position: relative;
+}
+
+.record-delete-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  z-index: 1;
+}
+
+.record-content:hover .record-delete-btn {
+  color: #94a3b8;
+}
+
+.record-delete-btn:hover {
+  color: #ef4444 !important;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+
+
 .record-list button,
+.record-list .record-content,
 .result-list button {
   display: flex;
   flex-direction: column;
@@ -977,7 +1011,7 @@ th {
 }
 
 .chunk-card:hover,
-.record-list button:hover,
+.record-list .record-content:hover,
 .result-list button:hover {
   border-color: #2563eb;
 }
@@ -1144,14 +1178,26 @@ th {
 
 .split {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(330px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
   gap: 16px;
+  height: calc(100vh - 146px);
+  min-height: 400px;
+}
+
+.split > .panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.split > .panel > h2 {
+  flex-shrink: 0;
 }
 
 .record-list,
 .result-list {
   display: flex;
-  max-height: 680px;
+  flex: 1;
   flex-direction: column;
   gap: 10px;
   overflow: auto;
