@@ -1,0 +1,1547 @@
+import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import ReactDOM from "react-dom/client";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Canvas } from "@react-three/fiber";
+import { OrbitControls, Html } from "@react-three/drei";
+import * as pdfjsLib from "pdfjs-dist";
+import {
+  Boxes,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Database,
+  FileText,
+  GitBranch,
+  Layers3,
+  Loader2,
+  RefreshCw,
+  Search,
+  UploadCloud,
+  XCircle,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react";
+import "./styles.css";
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8010";
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.mjs", import.meta.url).toString();
+
+const fallbackCollections: Collection[] = [
+  { name: "sample_knowledge_base", count: 5, metadata: { mode: "sample" }, source: "frontend-sample" },
+];
+
+const fallbackRecords: RecordItem[] = [
+  {
+    id: "chunk_001",
+    document: "向量数据库用于存储 embedding，并支持相似度检索。",
+    metadata: { source: "vector-db-demo.pdf", page: 1, chunk_id: "chunk_001" },
+    embedding: [0.12, 0.31, 0.88, 0.44, 0.19, 0.52],
+  },
+  {
+    id: "chunk_002",
+    document: "Chroma 适合本地 RAG 原型和知识库检索。",
+    metadata: { source: "vector-db-demo.pdf", page: 2, chunk_id: "chunk_002" },
+    embedding: [0.18, 0.28, 0.79, 0.55, 0.26, 0.49],
+  },
+  {
+    id: "chunk_003",
+    document: "MinerU OCR 可以把 PDF 页面解析为文本块、标题、表格、公式和图片区域。",
+    metadata: { source: "mineru-demo.pdf", page: 1, chunk_id: "chunk_003" },
+    embedding: [0.75, 0.11, 0.24, 0.62, 0.71, 0.35],
+  },
+  {
+    id: "chunk_004",
+    document: "Chunk 切分需要保留来源文档、页码、章节和 overlap 信息。",
+    metadata: { source: "mineru-demo.pdf", page: 2, chunk_id: "chunk_004" },
+    embedding: [0.69, 0.18, 0.31, 0.57, 0.66, 0.41],
+  },
+  {
+    id: "chunk_005",
+    document: "查询可视化会展示 query embedding、Top-K 命中结果和向量空间距离。",
+    metadata: { source: "query-demo.pdf", page: 1, chunk_id: "chunk_005" },
+    embedding: [0.22, 0.82, 0.35, 0.14, 0.47, 0.91],
+  },
+];
+
+const fallbackPoints: Point3D[] = [
+  { id: "chunk_001", x: -0.7, y: -0.1, z: 0.25, document: fallbackRecords[0].document, metadata: fallbackRecords[0].metadata },
+  { id: "chunk_002", x: -0.55, y: 0.2, z: 0.1, document: fallbackRecords[1].document, metadata: fallbackRecords[1].metadata },
+  { id: "chunk_003", x: 0.35, y: -0.45, z: -0.15, document: fallbackRecords[2].document, metadata: fallbackRecords[2].metadata },
+  { id: "chunk_004", x: 0.52, y: -0.25, z: 0.08, document: fallbackRecords[3].document, metadata: fallbackRecords[3].metadata },
+  { id: "chunk_005", x: 0.12, y: 0.72, z: -0.28, document: fallbackRecords[4].document, metadata: fallbackRecords[4].metadata },
+];
+
+const fallbackDocuments: DocumentItem[] = [
+  {
+    id: "mineru-demo",
+    file_name: "mineru-demo.pdf",
+    file_type: "pdf",
+    pages: 2,
+    ocr_status: "done",
+    chunk_status: "done",
+    embedding_status: "done",
+    ingest_status: "done",
+  },
+];
+
+const fallbackPages: OcrPage[] = [
+  {
+    page_no: 1,
+    width: 900,
+    height: 1200,
+    blocks: [
+      { id: "block_001", type: "text", text: "示例学报 · 2024 年第 3 期 · DOI: 10.1234/demo.2024.03", bbox: [90, 50, 760, 90], confidence: 0.96, chunk_ids: [] },
+      { id: "block_002", type: "title", text: "MinerU OCR 文档解析与可视化", bbox: [90, 100, 700, 150], confidence: 0.98, chunk_ids: ["chunk_003"] },
+      { id: "block_003", type: "title", text: "面向知识库构建的结构化解析方案", bbox: [90, 160, 720, 200], confidence: 0.97, chunk_ids: ["chunk_003"] },
+      { id: "block_004", type: "text", text: "知识库可视化项目组", bbox: [90, 210, 400, 240], confidence: 0.95, chunk_ids: [] },
+      { id: "block_005", type: "paragraph", text: "内容提要：页面会被解析为标题、段落、表格、公式和图片区域，并支持在 PDF 与 Markdown 之间双向定位。", bbox: [90, 260, 760, 340], confidence: 0.94, chunk_ids: ["chunk_003"] },
+      { id: "block_006", type: "paragraph", text: "关键词：MinerU；OCR；知识库；向量检索", bbox: [90, 350, 600, 380], confidence: 0.93, chunk_ids: [] },
+      { id: "block_007", type: "table", text: "类型 | 数量 | 状态\n标题 | 12 | 完成\n段落 | 48 | 完成", bbox: [90, 400, 800, 560], confidence: 0.91, chunk_ids: [] },
+    ],
+  },
+  {
+    page_no: 2,
+    width: 900,
+    height: 1200,
+    blocks: [
+      { id: "block_008", type: "title", text: "Chunk 切分与追溯", bbox: [90, 90, 650, 150], confidence: 0.97, chunk_ids: ["chunk_004"] },
+      { id: "block_009", type: "paragraph", text: "每个 Chunk 都应保留来源文档、页码、章节和 OCR 区域映射，以便在向量检索时回溯原文。", bbox: [90, 200, 790, 340], confidence: 0.95, chunk_ids: ["chunk_004"] },
+      { id: "block_010", type: "paragraph", text: "Abstract: This demo shows how parsed blocks map to markdown sections and remain traceable during retrieval.", bbox: [90, 360, 790, 420], confidence: 0.92, chunk_ids: [] },
+    ],
+  },
+];
+
+const fallbackChunks: Chunk[] = fallbackRecords.slice(2, 4).map((record) => ({
+  id: record.id,
+  text: record.document,
+  metadata: record.metadata,
+  token_count: record.document.length,
+  has_embedding: true,
+  in_chroma: true,
+}));
+
+type Collection = {
+  name: string;
+  count: number;
+  metadata: Record<string, unknown>;
+  source: string;
+};
+
+type RecordItem = {
+  id: string;
+  document: string;
+  metadata: Record<string, unknown>;
+  embedding?: number[];
+};
+
+type Point3D = {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  document: string;
+  metadata: Record<string, unknown>;
+  score?: number | null;
+};
+
+type DocumentItem = {
+  id: string;
+  file_name: string;
+  file_type: string;
+  file_url?: string;
+  pages: number;
+  ocr_status: string;
+  chunk_status: string;
+  embedding_status: string;
+  ingest_status: string;
+};
+
+type OcrBlock = {
+  id: string;
+  type: string;
+  text: string;
+  bbox: number[];
+  confidence?: number | null;
+  chunk_ids: string[];
+  raw?: Record<string, unknown>;
+};
+
+type OcrPage = {
+  page_no: number;
+  width: number;
+  height: number;
+  file_url?: string;
+  image_url?: string;
+  blocks: OcrBlock[];
+};
+
+type PageRenderMetrics = {
+  width: number;
+  height: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  pdfWidth?: number;
+  pdfHeight?: number;
+  pdfScale?: number;
+  offsetX?: number;
+  offsetY?: number;
+};
+
+type Chunk = {
+  id: string;
+  text: string;
+  metadata: Record<string, unknown>;
+  token_count: number;
+  has_embedding: boolean;
+  in_chroma: boolean;
+};
+
+type QueryResult = {
+  query: string;
+  query_point: { x: number; y: number; z: number };
+  results: Point3D[];
+};
+
+type ChromaStatus = {
+  connected: boolean;
+  host: string;
+  port: number;
+  collection_count?: number;
+  message: string;
+};
+
+type UploadResponse = {
+  document: DocumentItem;
+  pages: OcrPage[];
+  chunks: Chunk[];
+  parse_mode: string;
+  mineru_api_configured: boolean;
+  message: string;
+};
+
+type UploadStepStatus = "pending" | "running" | "done" | "error";
+
+type UploadStep = {
+  key: string;
+  label: string;
+  detail: string;
+  status: UploadStepStatus;
+};
+
+const initialUploadSteps: UploadStep[] = [
+  { key: "save", label: "保存原始文件", detail: "等待上传", status: "pending" },
+  { key: "submit", label: "提交 MinerU OCR 任务", detail: "等待 API 调用", status: "pending" },
+  { key: "upload", label: "上传文件到 MinerU", detail: "等待上传 URL", status: "pending" },
+  { key: "poll", label: "轮询解析结果", detail: "等待解析完成", status: "pending" },
+  { key: "visualize", label: "生成可视化数据", detail: "等待 OCR blocks 和 chunks", status: "pending" },
+];
+
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const isFormData = init?.body instanceof FormData;
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: isFormData ? undefined : { "Content-Type": "application/json" },
+    ...init,
+  });
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const payload = await response.json();
+      detail = typeof payload.detail === "string" ? payload.detail : JSON.stringify(payload.detail ?? payload);
+    } catch {
+      detail = await response.text();
+    }
+    throw new Error(`${response.status} ${response.statusText}${detail ? `：${detail}` : ""}`);
+  }
+  return response.json();
+}
+
+function App() {
+  const [activeView, setActiveView] = useState("overview");
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [selectedCollection, setSelectedCollection] = useState("");
+  const [records, setRecords] = useState<RecordItem[]>([]);
+  const [points, setPoints] = useState<Point3D[]>([]);
+  const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [selectedDocument, setSelectedDocument] = useState("");
+  const [pages, setPages] = useState<OcrPage[]>([]);
+  const [nativeResult, setNativeResult] = useState<Record<string, unknown> | null>(null);
+  const [selectedPageNo, setSelectedPageNo] = useState(1);
+  const [selectedBlock, setSelectedBlock] = useState<OcrBlock | null>(null);
+  const [chunks, setChunks] = useState<Chunk[]>([]);
+  const [selectedPoint, setSelectedPoint] = useState<Point3D | null>(null);
+  const [query, setQuery] = useState("什么是向量数据库？");
+  const [topK, setTopK] = useState(5);
+  const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
+  const [status, setStatus] = useState("正在加载数据");
+  const [apiConnected, setApiConnected] = useState(false);
+  const [chromaStatus, setChromaStatus] = useState<ChromaStatus | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadSteps, setUploadSteps] = useState<UploadStep[]>(initialUploadSteps);
+  const [uploadResultMessage, setUploadResultMessage] = useState("");
+
+  useEffect(() => {
+    void loadInitialData();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCollection) return;
+    void loadCollection(selectedCollection);
+  }, [selectedCollection]);
+
+  useEffect(() => {
+    if (!selectedDocument) return;
+    void loadDocument(selectedDocument);
+  }, [selectedDocument]);
+
+  const selectedPage = useMemo(
+    () => pages.find((page) => page.page_no === selectedPageNo) ?? pages[0],
+    [pages, selectedPageNo],
+  );
+
+  const highlightedIds = useMemo(
+    () => new Set(queryResult?.results.map((item) => item.id) ?? []),
+    [queryResult],
+  );
+
+  async function loadInitialData() {
+    try {
+      const [collectionList, documentList] = await Promise.all([
+        api<Collection[]>("/api/chroma/collections"),
+        api<DocumentItem[]>("/api/documents"),
+      ]);
+      const liveChromaStatus = await api<ChromaStatus>("/api/chroma/status");
+      setCollections(collectionList);
+      setDocuments(documentList);
+      setApiConnected(true);
+      setChromaStatus(liveChromaStatus);
+      if (collectionList[0]) setSelectedCollection(collectionList[0].name);
+      if (documentList[0]) setSelectedDocument(documentList[0].id);
+      setStatus(liveChromaStatus.connected ? "后端和 Chroma 已连接" : liveChromaStatus.message);
+    } catch (error) {
+      setCollections(fallbackCollections);
+      setDocuments(fallbackDocuments);
+      setApiConnected(false);
+      setChromaStatus(null);
+      setSelectedCollection(fallbackCollections[0].name);
+      setSelectedDocument(fallbackDocuments[0].id);
+      setStatus(`后端未连接，正在使用前端示例数据：${String(error)}`);
+    }
+  }
+
+  async function loadCollection(collection: string) {
+    try {
+      const [recordList, pointList] = await Promise.all([
+        api<RecordItem[]>(`/api/chroma/collections/${collection}/records`),
+        api<Point3D[]>(`/api/chroma/collections/${collection}/embeddings/3d`),
+      ]);
+      setRecords(recordList);
+      setPoints(pointList);
+      setSelectedPoint(pointList[0] ?? null);
+    } catch (error) {
+      setRecords(fallbackRecords);
+      setPoints(fallbackPoints);
+      setSelectedPoint(fallbackPoints[0]);
+      setStatus(`Collection 接口不可用，正在使用示例点云：${String(error)}`);
+    }
+  }
+
+  async function loadDocument(documentId: string) {
+    try {
+      const [pageList, chunkList] = await Promise.all([
+        api<OcrPage[]>(`/api/documents/${documentId}/pages`),
+        api<Chunk[]>(`/api/documents/${documentId}/chunks`),
+      ]);
+      const native = await api<Record<string, unknown>>(`/api/documents/${documentId}/native`).catch(() => null);
+      setPages(pageList);
+      setChunks(chunkList);
+      setNativeResult(native);
+      setSelectedPageNo(pageList[0]?.page_no ?? 1);
+      setSelectedBlock(pageList[0]?.blocks[0] ?? null);
+    } catch (error) {
+      setPages(fallbackPages);
+      setChunks(fallbackChunks);
+      setNativeResult(null);
+      setSelectedPageNo(fallbackPages[0].page_no);
+      setSelectedBlock(fallbackPages[0].blocks[0]);
+      setStatus(`文档接口不可用，正在使用示例 OCR 数据：${String(error)}`);
+    }
+  }
+
+  async function runQuery() {
+    if (!selectedCollection || !query.trim()) return;
+    try {
+      const result = await api<QueryResult>("/api/query", {
+        method: "POST",
+        body: JSON.stringify({
+          collection: selectedCollection,
+          query,
+          top_k: topK,
+        }),
+      });
+      setQueryResult(result);
+      setSelectedPoint(result.results[0] ?? null);
+      setActiveView("query");
+    } catch (error) {
+      const results = fallbackPoints.slice(0, topK).map((point, index) => ({
+        ...point,
+        score: Math.max(0.25, 0.92 - index * 0.1),
+      }));
+      const result = {
+        query,
+        query_point: { x: -0.2, y: 0.18, z: 0.05 },
+        results,
+      };
+      setQueryResult(result);
+      setSelectedPoint(results[0] ?? null);
+      setActiveView("query");
+      setStatus(`查询接口不可用，正在使用示例结果：${String(error)}`);
+    }
+  }
+
+  async function uploadDocument(file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+    setUploading(true);
+    setUploadResultMessage("");
+    setUploadSteps(markUploadStep(initialUploadSteps, "save", "running", "正在发送到后端"));
+    setStatus(`正在上传并解析 ${file.name}`);
+    const timers = [
+      window.setTimeout(() => setUploadSteps((steps) => markUploadStep(steps, "save", "done", "原始文件已提交到后端")), 500),
+      window.setTimeout(() => setUploadSteps((steps) => markUploadStep(steps, "submit", "running", "正在申请 MinerU 上传任务")), 900),
+      window.setTimeout(() => setUploadSteps((steps) => markUploadStep(steps, "upload", "running", "正在上传文件到 MinerU 临时地址")), 1800),
+      window.setTimeout(() => setUploadSteps((steps) => markUploadStep(steps, "poll", "running", "正在等待 OCR 解析结果")), 3000),
+      window.setTimeout(() => setUploadSteps((steps) => markUploadStep(steps, "poll", "running", "MinerU 解析中，继续轮询")), 6500),
+    ];
+    try {
+      const result = await api<UploadResponse>("/api/documents/upload", {
+        method: "POST",
+        body: formData,
+      });
+      timers.forEach(window.clearTimeout);
+      setDocuments((items) => [result.document, ...items.filter((item) => item.id !== result.document.id)]);
+      setSelectedDocument(result.document.id);
+      setPages(result.pages);
+      setChunks(result.chunks);
+      setNativeResult(result as unknown as Record<string, unknown>);
+      setSelectedPageNo(result.pages[0]?.page_no ?? 1);
+      setSelectedBlock(result.pages[0]?.blocks[0] ?? null);
+      setApiConnected(true);
+      setStatus(result.message);
+      setUploadResultMessage(result.message);
+      setUploadSteps((steps) =>
+        completeUploadSteps(
+          steps,
+          result.parse_mode === "mineru-api"
+            ? "MinerU OCR API 已返回解析结果"
+            : "MinerU API 失败，已使用本地预览结果",
+          result.parse_mode === "mineru-api",
+        ),
+      );
+      setActiveView("ocr");
+    } catch (error) {
+      timers.forEach(window.clearTimeout);
+      setUploadSteps((steps) => failRunningUploadStep(steps, String(error)));
+      setUploadResultMessage(`上传解析失败：${String(error)}`);
+      setStatus(`上传解析失败：${String(error)}`);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <Layers3 size={24} />
+          <div>
+            <strong>知识库可视化</strong>
+            <span>Chroma + MinerU</span>
+          </div>
+        </div>
+        <NavButton icon={<FileText size={18} />} label="知识库总览" value="overview" active={activeView} onClick={setActiveView} />
+        <NavButton icon={<UploadCloud size={18} />} label="上传解析" value="upload" active={activeView} onClick={setActiveView} />
+        <NavButton icon={<Boxes size={18} />} label="OCR 解析" value="ocr" active={activeView} onClick={setActiveView} />
+        <NavButton icon={<GitBranch size={18} />} label="Chunk 切分" value="chunks" active={activeView} onClick={setActiveView} />
+        <NavButton icon={<Database size={18} />} label="Chroma 内容" value="chroma" active={activeView} onClick={setActiveView} />
+        <NavButton icon={<Layers3 size={18} />} label="3D 向量空间" value="space" active={activeView} onClick={setActiveView} />
+        <NavButton icon={<Search size={18} />} label="查询可视化" value="query" active={activeView} onClick={setActiveView} />
+        <button className="refresh" onClick={() => void loadInitialData()} title="刷新">
+          <RefreshCw size={16} />
+          刷新数据
+        </button>
+      </aside>
+
+      <main className="workspace">
+        <header className="topbar">
+          <div>
+            <h1>{viewTitle(activeView)}</h1>
+            <p>{status}</p>
+          </div>
+          <div className="toolbar">
+            <span className={apiConnected ? "status-pill ok" : "status-pill warn"}>
+              API {apiConnected ? "已连接" : "未连接"}
+            </span>
+            <span className={chromaStatus?.connected ? "status-pill ok" : "status-pill warn"}>
+              Chroma {chromaStatus?.connected ? `${chromaStatus.host}:${chromaStatus.port}` : "未连接"}
+            </span>
+            <select value={selectedCollection} onChange={(event) => setSelectedCollection(event.target.value)}>
+              {collections.map((collection) => (
+                <option key={collection.name} value={collection.name}>
+                  {collection.name}
+                </option>
+              ))}
+            </select>
+            <select value={selectedDocument} onChange={(event) => setSelectedDocument(event.target.value)}>
+              {documents.map((document) => (
+                <option key={document.id} value={document.id}>
+                  {document.file_name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </header>
+
+        {activeView === "overview" && <Overview documents={documents} collections={collections} />}
+        {activeView === "upload" && (
+          <UploadView
+            uploading={uploading}
+            steps={uploadSteps}
+            resultMessage={uploadResultMessage}
+            onUpload={(file) => void uploadDocument(file)}
+          />
+        )}
+        {activeView === "ocr" && (
+          <OcrView
+            pages={pages}
+            selectedPage={selectedPage}
+            selectedBlock={selectedBlock}
+            nativeResult={nativeResult}
+            onSelectPage={setSelectedPageNo}
+            onSelectBlock={setSelectedBlock}
+          />
+        )}
+        {activeView === "chunks" && <ChunkView chunks={chunks} onSelectChunkId={(id) => focusChunk(id, pages, setSelectedPageNo, setSelectedBlock, setActiveView)} />}
+        {activeView === "chroma" && <ChromaView records={records} points={points} onSelectPoint={setSelectedPoint} />}
+        {activeView === "space" && (
+          <VectorSpace points={points} selectedPoint={selectedPoint} highlightedIds={highlightedIds} queryResult={queryResult} onSelectPoint={setSelectedPoint} />
+        )}
+        {activeView === "query" && (
+          <QueryView
+            query={query}
+            topK={topK}
+            result={queryResult}
+            points={points}
+            selectedPoint={selectedPoint}
+            highlightedIds={highlightedIds}
+            onQueryChange={setQuery}
+            onTopKChange={setTopK}
+            onRunQuery={() => void runQuery()}
+            onSelectPoint={setSelectedPoint}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+function NavButton(props: { icon: React.ReactNode; label: string; value: string; active: string; onClick: (value: string) => void }) {
+  return (
+    <button className={props.active === props.value ? "nav-button active" : "nav-button"} onClick={() => props.onClick(props.value)}>
+      {props.icon}
+      {props.label}
+    </button>
+  );
+}
+
+function UploadView({
+  uploading,
+  steps,
+  resultMessage,
+  onUpload,
+}: {
+  uploading: boolean;
+  steps: UploadStep[];
+  resultMessage: string;
+  onUpload: (file: File) => void;
+}) {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+
+  return (
+    <section className="upload-layout">
+      <div className="panel upload-panel">
+        <h2>上传文档并解析</h2>
+        <label className="dropzone">
+          <UploadCloud size={42} />
+          <strong>{selectedFile ? selectedFile.name : "选择 PDF、图片或文本文件"}</strong>
+          <span>{selectedFile ? `${(selectedFile.size / 1024 / 1024).toFixed(2)} MB` : "上传后会生成 OCR 区域、页面结构和 Chunk 预览"}</span>
+          <input
+            type="file"
+            accept=".pdf,.png,.jpg,.jpeg,.txt,.md,.csv"
+            onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
+          />
+        </label>
+        <button className="primary" disabled={!selectedFile || uploading} onClick={() => selectedFile && onUpload(selectedFile)}>
+          <UploadCloud size={16} />
+          {uploading ? "解析中" : "上传并解析"}
+        </button>
+      </div>
+      <div className="panel">
+        <h2>解析链路</h2>
+        <div className="step-list">
+          {steps.map((step) => (
+            <div className={`parse-step ${step.status}`} key={step.key}>
+              <div className="step-icon">
+                {step.status === "done" && <CheckCircle2 size={18} />}
+                {step.status === "running" && <Loader2 size={18} />}
+                {step.status === "error" && <XCircle size={18} />}
+                {step.status === "pending" && <span />}
+              </div>
+              <div>
+                <strong>{step.label}</strong>
+                <span>{step.detail}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {resultMessage && <div className="upload-result">{resultMessage}</div>}
+      </div>
+    </section>
+  );
+}
+
+function Overview({ documents, collections }: { documents: DocumentItem[]; collections: Collection[] }) {
+  return (
+    <section className="grid two">
+      <div className="panel">
+        <h2>文档处理状态</h2>
+        <div className="pipeline">
+          {["上传文档", "MinerU OCR", "结构化解析", "Chunk 切分", "Embedding", "写入 Chroma"].map((step) => (
+            <div className="pipeline-step" key={step}>
+              <span />
+              {step}
+            </div>
+          ))}
+        </div>
+        <Table
+          headers={["文件", "页数", "OCR", "Chunk", "Embedding", "入库"]}
+          rows={documents.map((document) => [
+            document.file_name,
+            document.pages,
+            document.ocr_status,
+            document.chunk_status,
+            document.embedding_status,
+            document.ingest_status,
+          ])}
+        />
+      </div>
+      <div className="panel">
+        <h2>Collection 总览</h2>
+        <div className="metric-grid">
+          <Metric label="Collection" value={collections.length} />
+          <Metric label="Records" value={collections.reduce((sum, item) => sum + item.count, 0)} />
+          <Metric label="数据源" value={collections[0]?.source ?? "-"} />
+        </div>
+        <Table
+          headers={["名称", "数量", "来源"]}
+          rows={collections.map((collection) => [collection.name, collection.count, collection.source])}
+        />
+      </div>
+    </section>
+  );
+}
+
+function OcrView(props: {
+  pages: OcrPage[];
+  selectedPage?: OcrPage;
+  selectedBlock: OcrBlock | null;
+  nativeResult: Record<string, unknown> | null;
+  onSelectPage: (pageNo: number) => void;
+  onSelectBlock: (block: OcrBlock) => void;
+}) {
+  const page = props.selectedPage;
+  const [renderMetrics, setRenderMetrics] = useState<PageRenderMetrics | null>(null);
+  const [pageLoading, setPageLoading] = useState(false);
+  const [zoom, setZoom] = useState(0.84);
+
+  useEffect(() => {
+    setRenderMetrics(null);
+    setPageLoading(Boolean(page?.file_url || page?.image_url));
+  }, [page?.page_no]);
+
+  const surfaceWidth = page?.width ?? 900;
+  const surfaceHeight = page?.height ?? 1200;
+  const sourceWidth = page?.width ?? 900;
+  const sourceHeight = page?.height ?? 1200;
+  const currentIndex = page ? props.pages.findIndex((item) => item.page_no === page.page_no) : -1;
+
+  const surfaceRef = React.useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = surfaceRef.current;
+    if (!el) return;
+    if (renderMetrics) {
+      el.style.width = `${renderMetrics.width}px`;
+      el.style.height = `${renderMetrics.height}px`;
+    } else if (!page?.image_url && !page?.file_url) {
+      el.style.width = `${surfaceWidth}px`;
+      el.style.height = `${surfaceHeight}px`;
+    } else {
+      el.style.width = "auto";
+      el.style.height = "auto";
+    }
+  }, [renderMetrics, surfaceWidth, surfaceHeight, page?.image_url, page?.file_url]);
+
+  function goPage(delta: number) {
+    const next = props.pages[currentIndex + delta];
+    if (next) props.onSelectPage(next.page_no);
+  }
+
+  return (
+    <section className="mineru-ocr-shell">
+      <aside className="mineru-file-rail">
+        <div className="mineru-logo">MinerU</div>
+        <button className="new-parse-button">
+          <UploadCloud size={16} />
+          新解析
+        </button>
+        <div className="mineru-rail-section">页面</div>
+        <div className="mineru-page-stack">
+          {props.pages.map((item) => (
+            <button
+              className={page?.page_no === item.page_no ? "mineru-page-button active" : "mineru-page-button"}
+              key={item.page_no}
+              onClick={() => props.onSelectPage(item.page_no)}
+            >
+              <FileText size={15} />
+              第 {item.page_no} 页
+              <span>{item.blocks.length}</span>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <div className="mineru-document-stage">
+        <div className="mineru-stage-toolbar">
+          <div className="toolbar-group">
+            <button onClick={() => goPage(-1)} disabled={currentIndex <= 0} title="上一页">
+              <ChevronLeft size={16} />
+            </button>
+            <strong>{page ? page.page_no : 0}</strong>
+            <span>/</span>
+            <span>{props.pages.length}</span>
+            <button onClick={() => goPage(1)} disabled={currentIndex < 0 || currentIndex >= props.pages.length - 1} title="下一页">
+              <ChevronRight size={16} />
+            </button>
+          </div>
+          <div className="toolbar-group">
+            <button onClick={() => setZoom((value) => Math.max(0.45, value - 0.08))} title="缩小">
+              <ZoomOut size={15} />
+            </button>
+            <strong>{Math.round(zoom * 100)}%</strong>
+            <button onClick={() => setZoom((value) => Math.min(1.6, value + 0.08))} title="放大">
+              <ZoomIn size={15} />
+            </button>
+          </div>
+        </div>
+
+        <div className="mineru-stage-scroll">
+          {page ? (
+            <div className="page-surface" ref={surfaceRef}>
+              {(page.image_url || page.file_url) && (
+                <PageBackground
+                  fileUrl={page.image_url || page.file_url || ""}
+                  pageNo={page.page_no}
+                  targetWidth={surfaceWidth}
+                  targetHeight={surfaceHeight}
+                  onMetrics={setRenderMetrics}
+                  onLoaded={() => setPageLoading(false)}
+                  preferImage={Boolean(page.image_url)}
+                />
+              )}
+              {!pageLoading && page.blocks.map((block) => {
+                const [x1, y1, x2, y2] = block.bbox;
+                const active = props.selectedBlock?.id === block.id;
+                const effectiveSurfaceWidth = renderMetrics?.width ?? surfaceWidth;
+                const effectiveSurfaceHeight = renderMetrics?.height ?? surfaceHeight;
+                const rect = mapBboxToSurface(
+                  [x1, y1, x2, y2],
+                  sourceWidth,
+                  sourceHeight,
+                  effectiveSurfaceWidth,
+                  effectiveSurfaceHeight,
+                  renderMetrics,
+                );
+                return (
+                  <button
+                    key={block.id}
+                    className={`ocr-box ${block.type} ${active ? "active" : ""}`}
+                    style={{
+                      left: rect.left,
+                      top: rect.top,
+                      width: rect.width,
+                      height: rect.height,
+                    }}
+                    onClick={() => props.onSelectBlock(block)}
+                    title={block.text}
+                  >
+                    {block.type}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <EmptyState text="没有 OCR 页面数据" />
+          )}
+        </div>
+      </div>
+
+      <MarkdownResultPanel
+        pages={props.pages}
+        selectedPageNo={page?.page_no ?? 1}
+        selectedBlock={props.selectedBlock}
+        nativeResult={props.nativeResult}
+        onSelectBlock={props.onSelectBlock}
+        onSelectPage={props.onSelectPage}
+      />
+    </section>
+  );
+}
+
+type MarkdownBlockItem = {
+  block: OcrBlock;
+  pageNo: number;
+  markdown: string;
+  variant: "meta" | "title" | "section" | "body" | "table" | "formula";
+};
+
+function blockKey(pageNo: number, blockId: string) {
+  return `${pageNo}:${blockId}`;
+}
+
+function MarkdownResultPanel({
+  pages,
+  selectedPageNo,
+  selectedBlock,
+  nativeResult,
+  onSelectBlock,
+  onSelectPage,
+}: {
+  pages: OcrPage[];
+  selectedPageNo: number;
+  selectedBlock: OcrBlock | null;
+  nativeResult: Record<string, unknown> | null;
+  onSelectBlock: (block: OcrBlock) => void;
+  onSelectPage: (pageNo: number) => void;
+}) {
+  const [resultTab, setResultTab] = useState<"markdown" | "json">("markdown");
+  const [copyHint, setCopyHint] = useState("");
+  const blockRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const pendingMarkdownClickRef = useRef<{ pageNo: number; blockId: string } | null>(null);
+
+  const mdBlocks = useMemo(() => collectMarkdownBlocks(pages), [pages]);
+  const fullMarkdown = useMemo(() => {
+    const nativeMd = extractNativeMarkdown(nativeResult);
+    if (nativeMd) return nativeMd;
+    return mdBlocks.map((item) => item.markdown).join("\n\n");
+  }, [mdBlocks, nativeResult]);
+  const jsonText = useMemo(
+    () => JSON.stringify(nativeResult ?? { pages }, null, 2),
+    [nativeResult, pages],
+  );
+
+  // #region agent log
+  useEffect(() => {
+    const idCounts = mdBlocks.reduce<Record<string, number>>((counts, item) => {
+      counts[item.block.id] = (counts[item.block.id] ?? 0) + 1;
+      return counts;
+    }, {});
+    const duplicateIds = Object.entries(idCounts).filter(([, count]) => count > 1).length;
+    fetch("http://127.0.0.1:7837/ingest/ccefa4c6-daa7-4883-8e5b-ede288b2180e", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "eb7c4d" },
+      body: JSON.stringify({
+        sessionId: "eb7c4d",
+        runId: "scroll-fix",
+        hypothesisId: "A-B",
+        location: "main.tsx:MarkdownResultPanel",
+        message: "scroll target resolution",
+        data: {
+          mdBlocksCount: mdBlocks.length,
+          duplicateBlockIds: duplicateIds,
+          selectedPageNo,
+          selectedBlockId: selectedBlock?.id ?? null,
+          scrollKey: selectedBlock?.id ? blockKey(selectedPageNo, selectedBlock.id) : null,
+          refExists: selectedBlock?.id ? Boolean(blockRefs.current[blockKey(selectedPageNo, selectedBlock.id)]) : false,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  }, [mdBlocks, selectedBlock?.id, selectedPageNo]);
+  // #endregion
+
+  useEffect(() => {
+    if (!selectedBlock?.id) return;
+    const pending = pendingMarkdownClickRef.current;
+    if (pending && pending.pageNo === selectedPageNo && pending.blockId === selectedBlock.id) {
+      pendingMarkdownClickRef.current = null;
+      return;
+    }
+    const key = blockKey(selectedPageNo, selectedBlock.id);
+    blockRefs.current[key]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [selectedBlock?.id, selectedPageNo]);
+
+  async function handleCopy() {
+    const text = resultTab === "markdown" ? fullMarkdown : jsonText;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyHint("已复制");
+    } catch {
+      setCopyHint("复制失败");
+    }
+    window.setTimeout(() => setCopyHint(""), 1500);
+  }
+
+  function handleBlockClick(item: MarkdownBlockItem) {
+    pendingMarkdownClickRef.current = { pageNo: item.pageNo, blockId: item.block.id };
+    onSelectPage(item.pageNo);
+    onSelectBlock(item.block);
+  }
+
+  return (
+    <aside className="mineru-result-panel">
+      <div className="result-tabs">
+        <button className={resultTab === "markdown" ? "active" : ""} onClick={() => setResultTab("markdown")}>
+          Markdown
+        </button>
+        <button className={resultTab === "json" ? "active" : ""} onClick={() => setResultTab("json")}>
+          JSON
+        </button>
+        <button className="copy-button" title={copyHint || "复制"} onClick={() => void handleCopy()}>
+          <Copy size={15} />
+        </button>
+      </div>
+      {resultTab === "markdown" ? (
+        <div className="markdown-preview">
+          {mdBlocks.length === 0 ? (
+            extractNativeMarkdown(nativeResult) ? (
+              <div className="markdown-full-doc">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  {extractNativeMarkdown(nativeResult) ?? ""}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <div className="md-empty">暂无 Markdown 内容</div>
+            )
+          ) : (
+            mdBlocks.map((item) => {
+              const itemKey = blockKey(item.pageNo, item.block.id);
+              const isActive = selectedPageNo === item.pageNo && selectedBlock?.id === item.block.id;
+              return (
+              <div
+                key={itemKey}
+                ref={(node) => {
+                  blockRefs.current[itemKey] = node;
+                }}
+                className={`md-doc-block variant-${item.variant} ${isActive ? "active" : ""}`}
+                onClick={() => handleBlockClick(item)}
+              >
+                <div className="md-doc-body">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {item.markdown}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            );
+            })
+          )}
+        </div>
+      ) : (
+        <pre className="json-preview">{jsonText}</pre>
+      )}
+    </aside>
+  );
+}
+
+const markdownComponents = {
+  h1: ({ children }: { children?: React.ReactNode }) => <h1 className="md-h1">{children}</h1>,
+  h2: ({ children }: { children?: React.ReactNode }) => <h2 className="md-h2">{children}</h2>,
+  h3: ({ children }: { children?: React.ReactNode }) => <h3 className="md-h3">{children}</h3>,
+  p: ({ children }: { children?: React.ReactNode }) => <p className="md-p">{children}</p>,
+  table: ({ children }: { children?: React.ReactNode }) => (
+    <div className="md-table-wrap">
+      <table className="md-table">{children}</table>
+    </div>
+  ),
+};
+
+function PageBackground({
+  fileUrl,
+  pageNo,
+  targetWidth,
+  targetHeight,
+  onMetrics,
+  onLoaded,
+  preferImage,
+}: {
+  fileUrl: string;
+  pageNo: number;
+  targetWidth: number;
+  targetHeight: number;
+  onMetrics: (metrics: PageRenderMetrics) => void;
+  onLoaded?: () => void;
+  preferImage?: boolean;
+}) {
+  const url = assetUrl(fileUrl);
+  const lower = fileUrl.toLowerCase();
+  if (preferImage || lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")) {
+    return <img className="page-background-image" src={url} alt="原始页面" onLoad={(event) => {
+      const image = event.currentTarget;
+      const maxWidth = Math.min(image.parentElement?.parentElement?.clientWidth || image.naturalWidth, 760);
+      const scale = maxWidth / image.naturalWidth;
+      onMetrics({
+        width: Math.floor(image.naturalWidth * scale),
+        height: Math.floor(image.naturalHeight * scale),
+        sourceWidth: image.naturalWidth,
+        sourceHeight: image.naturalHeight,
+      });
+      image.style.width = `${Math.floor(image.naturalWidth * scale)}px`;
+      image.style.height = `${Math.floor(image.naturalHeight * scale)}px`;
+      onLoaded?.();
+    }} />;
+  }
+  if (lower.endsWith(".pdf")) {
+    return <PdfPageCanvas url={url} pageNo={pageNo} targetWidth={targetWidth} targetHeight={targetHeight} onMetrics={onMetrics} onLoaded={onLoaded} />;
+  }
+  return <div className="page-background-placeholder">无法直接预览此文件</div>;
+}
+
+function PdfPageCanvas({
+  url,
+  pageNo,
+  targetWidth,
+  targetHeight,
+  onMetrics,
+  onLoaded,
+}: {
+  url: string;
+  pageNo: number;
+  targetWidth: number;
+  targetHeight: number;
+  onMetrics: (metrics: PageRenderMetrics) => void;
+  onLoaded?: () => void;
+}) {
+  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const [error, setError] = useState("");
+  const onLoadedRef = React.useRef(onLoaded);
+  onLoadedRef.current = onLoaded;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function renderPage() {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      setError("");
+      try {
+        const pdf = await pdfjsLib.getDocument(url).promise;
+        const page = await pdf.getPage(Math.min(pageNo, pdf.numPages));
+        const baseViewport = page.getViewport({ scale: 1 });
+        const containerWidth = Math.min(canvas.parentElement?.parentElement?.clientWidth || targetWidth, 760);
+        const targetAspect = targetHeight / targetWidth;
+        const renderWidth = containerWidth;
+        const renderHeight = Math.floor(renderWidth * targetAspect);
+        const scale = Math.max(renderWidth / baseViewport.width, renderHeight / baseViewport.height);
+        const viewport = page.getViewport({ scale });
+        const context = canvas.getContext("2d");
+        if (!context || cancelled) return;
+        const offscreen = document.createElement("canvas");
+        offscreen.width = Math.floor(viewport.width);
+        offscreen.height = Math.floor(viewport.height);
+        const offscreenContext = offscreen.getContext("2d");
+        if (!offscreenContext) return;
+        await page.render({ canvasContext: offscreenContext, viewport }).promise;
+
+        canvas.width = renderWidth;
+        canvas.height = renderHeight;
+        canvas.style.width = `${renderWidth}px`;
+        canvas.style.height = `${renderHeight}px`;
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, renderWidth, renderHeight);
+        const offsetX = (renderWidth - offscreen.width) / 2;
+        const offsetY = (renderHeight - offscreen.height) / 2;
+        context.drawImage(offscreen, offsetX, offsetY);
+        onMetrics({
+          width: renderWidth,
+          height: renderHeight,
+          sourceWidth: targetWidth,
+          sourceHeight: targetHeight,
+          pdfWidth: baseViewport.width,
+          pdfHeight: baseViewport.height,
+          pdfScale: scale,
+          offsetX,
+          offsetY,
+        });
+        if (!cancelled) onLoadedRef.current?.();
+      } catch (err) {
+        if (!cancelled) setError(String(err));
+      }
+    }
+    void renderPage();
+    return () => {
+      cancelled = true;
+    };
+  }, [url, pageNo]);
+
+  return (
+    <>
+      <canvas className="page-background-canvas" ref={canvasRef} />
+      {error && <div className="page-render-error">{error}</div>}
+    </>
+  );
+}
+
+function ChunkView({ chunks, onSelectChunkId }: { chunks: Chunk[]; onSelectChunkId: (id: string) => void }) {
+  return (
+    <section className="panel">
+      <h2>Chunk 切分</h2>
+      <div className="chunk-grid">
+        {chunks.map((chunk) => (
+          <button className="chunk-card" key={chunk.id} onClick={() => onSelectChunkId(chunk.id)}>
+            <strong>{chunk.id}</strong>
+            <p>{chunk.text}</p>
+            <span>{String(chunk.metadata.source ?? "unknown")} · page {String(chunk.metadata.page ?? "-")}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ChromaView({ records, points, onSelectPoint }: { records: RecordItem[]; points: Point3D[]; onSelectPoint: (point: Point3D) => void }) {
+  const pointMap = useMemo(() => new Map(points.map((point) => [point.id, point])), [points]);
+  return (
+    <section className="split">
+      <div className="panel">
+        <h2>Records</h2>
+        <div className="record-list">
+          {records.map((record) => (
+            <button key={record.id} onClick={() => pointMap.get(record.id) && onSelectPoint(pointMap.get(record.id)!)}>
+              <strong>{record.id}</strong>
+              <span>{record.document}</span>
+              <small>{JSON.stringify(record.metadata)}</small>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="panel">
+        <h2>Embedding 摘要</h2>
+        <Table
+          headers={["ID", "维度", "来源"]}
+          rows={records.map((record) => [record.id, record.embedding?.length ?? 0, String(record.metadata.source ?? "-")])}
+        />
+      </div>
+    </section>
+  );
+}
+
+function QueryView(props: {
+  query: string;
+  topK: number;
+  result: QueryResult | null;
+  points: Point3D[];
+  selectedPoint: Point3D | null;
+  highlightedIds: Set<string>;
+  onQueryChange: (value: string) => void;
+  onTopKChange: (value: number) => void;
+  onRunQuery: () => void;
+  onSelectPoint: (point: Point3D) => void;
+}) {
+  return (
+    <section className="query-layout">
+      <div className="panel query-controls">
+        <h2>查询</h2>
+        <textarea value={props.query} onChange={(event) => props.onQueryChange(event.target.value)} />
+        <label>
+          Top-K
+          <input type="number" min={1} max={50} value={props.topK} onChange={(event) => props.onTopKChange(Number(event.target.value))} />
+        </label>
+        <button className="primary" onClick={props.onRunQuery}>
+          <Search size={16} />
+          执行查询
+        </button>
+        <div className="result-list">
+          {props.result?.results.map((item) => (
+            <button key={item.id} onClick={() => props.onSelectPoint(item)}>
+              <strong>{item.id}</strong>
+              <span>score {item.score?.toFixed(3) ?? "-"}</span>
+              <p>{item.document}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+      <VectorSpace
+        points={props.points}
+        selectedPoint={props.selectedPoint}
+        highlightedIds={props.highlightedIds}
+        queryResult={props.result}
+        onSelectPoint={props.onSelectPoint}
+      />
+    </section>
+  );
+}
+
+function VectorSpace(props: {
+  points: Point3D[];
+  selectedPoint: Point3D | null;
+  highlightedIds: Set<string>;
+  queryResult: QueryResult | null;
+  onSelectPoint: (point: Point3D) => void;
+}) {
+  return (
+    <section className="space-layout">
+      <div className="panel three-panel">
+        <Canvas camera={{ position: [0, 0, 4], fov: 55 }}>
+          <color attach="background" args={["#f8fafc"]} />
+          <ambientLight intensity={0.7} />
+          <pointLight position={[3, 4, 5]} intensity={0.7} />
+          <Suspense fallback={<Html center>加载点云</Html>}>
+            <group scale={1.35}>
+              {props.points.map((point) => (
+                <VectorDot
+                  key={point.id}
+                  point={point}
+                  active={props.selectedPoint?.id === point.id}
+                  highlighted={props.highlightedIds.has(point.id)}
+                  onClick={() => props.onSelectPoint(point)}
+                />
+              ))}
+              {props.queryResult && (
+                <mesh position={[props.queryResult.query_point.x, props.queryResult.query_point.y, props.queryResult.query_point.z]}>
+                  <sphereGeometry args={[0.055, 24, 24]} />
+                  <meshStandardMaterial color="#111827" />
+                </mesh>
+              )}
+            </group>
+          </Suspense>
+          <OrbitControls makeDefault />
+        </Canvas>
+      </div>
+      <div className="panel detail-panel">
+        <h2>点详情</h2>
+        {props.selectedPoint ? (
+          <>
+            <div className="tag-row">
+              <span>{props.selectedPoint.id}</span>
+              {props.selectedPoint.score != null && <span>{props.selectedPoint.score.toFixed(3)}</span>}
+            </div>
+            <p className="body-text">{props.selectedPoint.document}</p>
+            <pre>{JSON.stringify(props.selectedPoint.metadata, null, 2)}</pre>
+          </>
+        ) : (
+          <EmptyState text="选择一个向量点" />
+        )}
+      </div>
+    </section>
+  );
+}
+
+function VectorDot({ point, active, highlighted, onClick }: { point: Point3D; active: boolean; highlighted: boolean; onClick: () => void }) {
+  const color = active ? "#e11d48" : highlighted ? "#f59e0b" : colorBySource(String(point.metadata.source ?? point.id));
+  const size = active ? 0.06 : highlighted ? 0.052 : 0.038;
+  return (
+    <mesh position={[point.x, point.y, point.z]} onClick={(event) => { event.stopPropagation(); onClick(); }}>
+      <sphereGeometry args={[size, 20, 20]} />
+      <meshStandardMaterial color={color} roughness={0.45} />
+    </mesh>
+  );
+}
+
+function Table({ headers, rows }: { headers: string[]; rows: Array<Array<string | number>> }) {
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return <div className="empty">{text}</div>;
+}
+
+function viewTitle(view: string) {
+  const titles: Record<string, string> = {
+    overview: "知识库总览",
+    upload: "上传文档并解析",
+    ocr: "MinerU OCR 解析可视化",
+    chunks: "Chunk 切分可视化",
+    chroma: "Chroma 数据内容",
+    space: "3D 向量空间",
+    query: "查询可视化",
+  };
+  return titles[view] ?? "可视化";
+}
+
+function typeColor(type: string): string {
+  const t = type.split(",")[0].toLowerCase();
+  if (t === "title") return "#0d53de";
+  if (t === "table") return "#059669";
+  if (t === "formula") return "#7c3aed";
+  if (t === "footnote" || t === "image_footnote") return "#a4a4a4";
+  return "#2563eb";
+}
+
+function colorBySource(source: string) {
+  const palette = ["#2563eb", "#059669", "#dc2626", "#7c3aed", "#0891b2", "#ca8a04"];
+  const hash = [...source].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  return palette[hash % palette.length];
+}
+
+function extractTextFromMineruBlock(block: Record<string, unknown>): string {
+  for (const key of ["text", "content", "html", "latex"]) {
+    const value = block[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+
+  const lineTexts: string[] = [];
+  const lines = block.lines;
+  if (Array.isArray(lines)) {
+    for (const line of lines) {
+      if (!line || typeof line !== "object") continue;
+      const lineObj = line as Record<string, unknown>;
+      if (typeof lineObj.content === "string" && lineObj.content.trim()) {
+        lineTexts.push(lineObj.content.trim());
+        continue;
+      }
+      const spanParts: string[] = [];
+      const spans = lineObj.spans;
+      if (Array.isArray(spans)) {
+        for (const span of spans) {
+          if (!span || typeof span !== "object") continue;
+          const spanObj = span as Record<string, unknown>;
+          for (const spanKey of ["content", "text", "html", "latex"]) {
+            const spanValue = spanObj[spanKey];
+            if (typeof spanValue === "string" && spanValue.trim()) {
+              spanParts.push(spanValue.trim());
+              break;
+            }
+          }
+        }
+      }
+      if (spanParts.length) lineTexts.push(spanParts.join(""));
+    }
+  }
+  if (lineTexts.length) return lineTexts.join("\n");
+
+  for (const key of ["blocks", "sub_blocks", "children"]) {
+    const nested = block[key];
+    if (!Array.isArray(nested)) continue;
+    const nestedTexts = nested
+      .filter((item) => item && typeof item === "object")
+      .map((item) => extractTextFromMineruBlock(item as Record<string, unknown>))
+      .filter(Boolean);
+    if (nestedTexts.length) return nestedTexts.join("\n");
+  }
+
+  return "";
+}
+
+function resolveBlockText(block: OcrBlock) {
+  const direct = block.text?.trim();
+  if (direct) return direct;
+  if (block.raw) return extractTextFromMineruBlock(block.raw);
+  return "";
+}
+
+function extractNativeMarkdown(nativeResult: Record<string, unknown> | null) {
+  if (!nativeResult) return "";
+  for (const key of ["markdown_content", "md_content", "markdown"]) {
+    const value = nativeResult[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function isMetadataText(text: string) {
+  return /DOI|ISSN|cnki\.net|学报|期刊|年第\s*\d+\s*期/i.test(text) && text.length < 320;
+}
+
+function formatSectionLabel(text: string) {
+  const match = text.match(/^([^:：]+[:：])([\s\S]*)$/);
+  if (!match) return text;
+  return `**${match[1]}**${match[2]}`;
+}
+
+function collectMarkdownBlocks(pages: OcrPage[]): MarkdownBlockItem[] {
+  const items: MarkdownBlockItem[] = [];
+  let titleCount = 0;
+
+  for (const page of pages) {
+    for (const block of page.blocks) {
+      const text = resolveBlockText(block);
+      if (!text) continue;
+
+      const type = block.type.split(",")[0].toLowerCase();
+      let markdown = text;
+      let variant: MarkdownBlockItem["variant"] = "body";
+
+      if (isMetadataText(text)) {
+        variant = "meta";
+      } else if (type === "title") {
+        titleCount += 1;
+        variant = "title";
+        if (titleCount === 1) markdown = `# ${text}`;
+        else if (titleCount === 2) markdown = `## ${text}`;
+        else markdown = `### ${text}`;
+      } else if (type === "table") {
+        variant = "table";
+        markdown = text.includes("|") ? text : text.replace(/\s*\|\s*/g, " | ").replace(/\n/g, "\n| ");
+      } else if (type === "formula") {
+        variant = "formula";
+        markdown = `$$\n${text}\n$$`;
+      } else if (/^(内容提要|关键词|Abstract|Keywords)[:：]/.test(text)) {
+        variant = "section";
+        markdown = formatSectionLabel(text);
+      }
+
+      items.push({ block, pageNo: page.page_no, markdown, variant });
+    }
+  }
+
+  return items;
+}
+
+function pagesToMarkdown(pages: OcrPage[]) {
+  return collectMarkdownBlocks(pages).map((item) => item.markdown).join("\n\n");
+}
+
+function mapBboxToSurface(
+  bbox: [number, number, number, number],
+  sourceWidth: number,
+  sourceHeight: number,
+  surfaceWidth: number,
+  surfaceHeight: number,
+  metrics: PageRenderMetrics | null,
+) {
+  const [x1, y1, x2, y2] = bbox;
+  const bboxWidth = x2 - x1;
+  const bboxHeight = y2 - y1;
+
+  if (metrics?.pdfWidth && metrics.pdfHeight && metrics.pdfScale) {
+    const pdfX1 = (x1 / sourceWidth) * metrics.pdfWidth;
+    const pdfY1 = (y1 / sourceHeight) * metrics.pdfHeight;
+    const pdfX2 = (x2 / sourceWidth) * metrics.pdfWidth;
+    const pdfY2 = (y2 / sourceHeight) * metrics.pdfHeight;
+    const offsetX = metrics.offsetX ?? 0;
+    const offsetY = metrics.offsetY ?? 0;
+    return {
+      left: offsetX + pdfX1 * metrics.pdfScale,
+      top: offsetY + pdfY1 * metrics.pdfScale,
+      width: (pdfX2 - pdfX1) * metrics.pdfScale,
+      height: (pdfY2 - pdfY1) * metrics.pdfScale,
+    };
+  }
+
+  // Detect coordinate system: if bbox exceeds source dimensions, it's likely in PDF/image pixels
+  if (bboxWidth > sourceWidth || bboxHeight > sourceHeight) {
+    // Bbox is in actual pixels (PDF or image), need to scale to surface
+    const scaleX = surfaceWidth / sourceWidth;
+    const scaleY = surfaceHeight / sourceHeight;
+    const scale = Math.min(scaleX, scaleY);
+    const offsetX = (surfaceWidth - sourceWidth * scale) / 2;
+    const offsetY = (surfaceHeight - sourceHeight * scale) / 2;
+    return {
+      left: offsetX + x1 * scale,
+      top: offsetY + y1 * scale,
+      width: bboxWidth * scale,
+      height: bboxHeight * scale,
+    };
+  }
+
+  // Normalize from source space to surface space
+  return {
+    left: (x1 / sourceWidth) * surfaceWidth,
+    top: (y1 / sourceHeight) * surfaceHeight,
+    width: ((x2 - x1) / sourceWidth) * surfaceWidth,
+    height: ((y2 - y1) / sourceHeight) * surfaceHeight,
+  };
+}
+
+function assetUrl(fileUrl: string) {
+  if (fileUrl.startsWith("http://") || fileUrl.startsWith("https://")) {
+    return fileUrl;
+  }
+  return `${API_BASE_URL}${fileUrl.startsWith("/") ? fileUrl : `/${fileUrl}`}`;
+}
+
+function markUploadStep(steps: UploadStep[], key: string, status: UploadStepStatus, detail: string) {
+  return steps.map((step) => {
+    if (step.key === key) {
+      return { ...step, status, detail };
+    }
+    return step;
+  });
+}
+
+function completeUploadSteps(steps: UploadStep[], finalDetail: string, mineruSucceeded: boolean) {
+  return steps.map((step) => {
+    if (step.key === "visualize") {
+      return { ...step, status: "done" as const, detail: "OCR blocks、页面结构和 chunks 已生成" };
+    }
+    if (step.key === "poll") {
+      return { ...step, status: mineruSucceeded ? "done" as const : "error" as const, detail: finalDetail };
+    }
+    if (step.status === "pending" || step.status === "running") {
+      return { ...step, status: "done" as const, detail: step.status === "pending" ? "已完成" : step.detail };
+    }
+    return step;
+  });
+}
+
+function failRunningUploadStep(steps: UploadStep[], error: string) {
+  const runningIndex = steps.findIndex((step) => step.status === "running");
+  const targetIndex = runningIndex >= 0 ? runningIndex : steps.findIndex((step) => step.status === "pending");
+  return steps.map((step, index) => {
+    if (index === targetIndex) {
+      return { ...step, status: "error" as const, detail: error };
+    }
+    return step;
+  });
+}
+
+function focusChunk(
+  chunkId: string,
+  pages: OcrPage[],
+  setSelectedPageNo: (pageNo: number) => void,
+  setSelectedBlock: (block: OcrBlock) => void,
+  setActiveView: (view: string) => void,
+) {
+  for (const page of pages) {
+    const block = page.blocks.find((item) => item.chunk_ids.includes(chunkId));
+    if (block) {
+      setSelectedPageNo(page.page_no);
+      setSelectedBlock(block);
+      setActiveView("ocr");
+      return;
+    }
+  }
+}
+
+ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
