@@ -1,6 +1,7 @@
 import shutil
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -117,6 +118,17 @@ def get_chunk(chunk_id: str):
     if chunk is None:
         raise HTTPException(status_code=404, detail="Chunk not found")
     return chunk
+
+
+@app.post("/api/documents/{document_id}/embedding")
+def embed_chunks(document_id: str, payload: dict[str, Any]):
+    chunk_ids = payload.get("chunk_ids", [])
+    if not chunk_ids:
+        raise HTTPException(status_code=400, detail="No chunk_ids provided")
+    result = mineru_service.embed_chunks(document_id, chunk_ids, chroma_service)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return result
 
 
 @app.get("/api/chroma/collections")

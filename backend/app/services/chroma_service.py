@@ -163,6 +163,17 @@ class ChromaService:
         except Exception:
             return None
 
+    def add_to_collection(self, collection_name: str, ids: list[str], documents: list[str], metadatas: list[dict[str, Any]]) -> bool:
+        client = self._get_client()
+        if client is None:
+            return False
+        try:
+            collection = client.get_or_create_collection(name=collection_name)
+            collection.add(ids=ids, documents=documents, metadatas=metadatas)
+            return True
+        except Exception:
+            return False
+
     def _format_query_result(self, collection_name: str, query_text: str, data: dict[str, Any]) -> dict[str, Any]:
         ids = (data.get("ids") or [[]])[0]
         documents = (data.get("documents") or [[]])[0]

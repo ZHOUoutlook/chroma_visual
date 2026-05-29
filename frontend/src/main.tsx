@@ -283,6 +283,9 @@ function App() {
   const [uploading, setUploading] = useState(false);
   const [uploadSteps, setUploadSteps] = useState<UploadStep[]>(initialUploadSteps);
   const [uploadResultMessage, setUploadResultMessage] = useState("");
+  const [selectedChunkIds, setSelectedChunkIds] = useState<Set<string>>(new Set());
+  const [embeddingBusy, setEmbeddingBusy] = useState(false);
+  const [embeddingMessage, setEmbeddingMessage] = useState("");
 
   useEffect(() => {
     void loadInitialData();
@@ -453,6 +456,47 @@ function App() {
     }
   }
 
+  function handleToggleChunk(id: string) {
+    setSelectedChunkIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function handleSelectAllChunks() {
+    setSelectedChunkIds(new Set(chunks.filter((c) => !c.has_embedding).map((c) => c.id)));
+  }
+
+  function handleDeselectAllChunks() {
+    setSelectedChunkIds(new Set());
+  }
+
+  async function handleEmbedChunks() {
+    if (!selectedDocument || selectedChunkIds.size === 0) return;
+    setEmbeddingBusy(true);
+    setEmbeddingMessage("");
+    try {
+      const result = await api<{ embedded: number; skipped: number; not_found: number; total: number }>(
+        `/api/documents/${selectedDocument}/embedding`,
+        {
+          method: "POST",
+          body: JSON.stringify({ chunk_ids: [...selectedChunkIds] }),
+        },
+      );
+      setEmbeddingMessage(
+        `已嵌入 ${result.embedded} 个，跳过 ${result.skipped} 个${result.not_found > 0 ? `，未找到 ${result.not_found} 个` : ""}`,
+      );
+      setSelectedChunkIds(new Set());
+      await loadDocument(selectedDocument);
+    } catch (error) {
+      setEmbeddingMessage(`嵌入失败：${String(error)}`);
+    } finally {
+      setEmbeddingBusy(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -527,7 +571,21 @@ function App() {
             pendingVersion={pendingVersion}
           />
         )}
-        {activeView === "chunks" && <ChunkView chunks={chunks} onSelectChunkId={(id) => focusChunk(id, pages, setSelectedPageNo, setSelectedBlock, setActiveView, pendingChunkTargetRef, setPendingVersion)} />}
+        {activeView === "chunks" && (
+          <ChunkView
+            chunks={chunks}
+            onFocusChunk={(chunk) =>
+              focusChunk(chunk, pages, setSelectedPageNo, setSelectedBlock, setActiveView, pendingChunkTargetRef, setPendingVersion)
+            }
+            selectedIds={selectedChunkIds}
+            onToggleChunk={handleToggleChunk}
+            onSelectAll={handleSelectAllChunks}
+            onDeselectAll={handleDeselectAllChunks}
+            onEmbed={() => void handleEmbedChunks()}
+            embeddingBusy={embeddingBusy}
+            embeddingMessage={embeddingMessage}
+          />
+        )}
         {activeView === "chroma" && <ChromaView records={records} points={points} onSelectPoint={setSelectedPoint} />}
         {activeView === "space" && (
           <VectorSpace points={points} selectedPoint={selectedPoint} highlightedIds={highlightedIds} queryResult={queryResult} onSelectPoint={setSelectedPoint} />
@@ -940,6 +998,7 @@ function OcrView(props: {
     if (pending && pending.pageNo === pageNo) {
       ref.current = null;
       navigationGuardUntilRef.current = Date.now() + 800;
+      props.onSelectPage(pageNo);
       scrollToPage(pageNo, "smooth");
       props.onSelectBlock(pending.block);
     }
@@ -979,6 +1038,7 @@ function OcrView(props: {
 
           const pageNo = Number((best.target as HTMLElement).dataset.pageNo);
           if (!pageNo || pageNo === selectedPageNoRef.current) return;
+          if (props.pendingChunkTargetRef?.current) return;
           if (isMarkdownClickGuarded()) return;
           if (isNavigationGuarded()) return;
 
@@ -1264,6 +1324,7 @@ const markdownComponents = {
       <table className="md-table">{children}</table>
     </div>
   ),
+  del: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
 };
 
 function PageBackground({
@@ -1401,7 +1462,27 @@ function PdfPageCanvas({
   );
 }
 
-function ChunkView({ chunks, onSelectChunkId }: { chunks: Chunk[]; onSelectChunkId: (id: string) => void }) {
+function ChunkView({
+  chunks,
+  onFocusChunk,
+  selectedIds,
+  onToggleChunk,
+  onSelectAll,
+  onDeselectAll,
+  onEmbed,
+  embeddingBusy,
+  embeddingMessage,
+}: {
+  chunks: Chunk[];
+  onFocusChunk: (chunk: Chunk) => void;
+  selectedIds: Set<string>;
+  onToggleChunk: (id: string) => void;
+  onSelectAll: () => void;
+  onDeselectAll: () => void;
+  onEmbed: () => void;
+  embeddingBusy: boolean;
+  embeddingMessage: string;
+}) {
   const COLUMNS = 5;
   const columns = useMemo(() => {
     const cols: Chunk[][] = Array.from({ length: COLUMNS }, () => []);
@@ -1415,19 +1496,69 @@ function ChunkView({ chunks, onSelectChunkId }: { chunks: Chunk[]; onSelectChunk
     return cols;
   }, [chunks]);
 
+  const selectableCount = chunks.filter((c) => !c.has_embedding).length;
+
   return (
     <section className="panel">
-      <h2>Chunk 切分</h2>
+      <div className="chunk-toolbar">
+        <h2>Chunk 切分</h2>
+        <div className="chunk-toolbar-actions">
+          <button className="secondary" onClick={onSelectAll} disabled={selectableCount === 0}>
+            全选
+          </button>
+          <button className="secondary" onClick={onDeselectAll} disabled={selectedIds.size === 0}>
+            取消全选
+          </button>
+          <button className="primary" onClick={onEmbed} disabled={selectedIds.size === 0 || embeddingBusy}>
+            <Database size={16} />
+            {embeddingBusy ? "Embedding..." : `Embedding (${selectedIds.size})`}
+          </button>
+        </div>
+      </div>
+      {embeddingMessage && <div className="embedding-message">{embeddingMessage}</div>}
       <div className="chunk-masonry">
         {columns.map((col, ci) => (
           <div className="chunk-masonry-col" key={ci}>
-            {col.map((chunk) => (
-              <button className="chunk-card" key={chunk.id} onClick={() => onSelectChunkId(chunk.id)}>
-                <strong>{chunk.id}</strong>
-                <p>{chunk.text}</p>
-                <span>{String(chunk.metadata.source ?? "unknown")} · page {String(chunk.metadata.page ?? "-")}</span>
-              </button>
-            ))}
+            {col.map((chunk) => {
+              const isEmbedded = chunk.has_embedding;
+              const isSelected = selectedIds.has(chunk.id);
+              return (
+                <div
+                  className={`chunk-card${isEmbedded ? " embedded" : ""}${isSelected ? " selected" : ""}`}
+                  key={chunk.id}
+                >
+                  <button
+                    type="button"
+                    className="chunk-context-btn"
+                    onClick={() => onFocusChunk(chunk)}
+                    title="在 OCR 页面中查看上下文"
+                  >
+                    <FileText size={14} />
+                  </button>
+                  <div className="chunk-card-header">
+                    <label className="chunk-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        disabled={isEmbedded}
+                        onChange={() => onToggleChunk(chunk.id)}
+                      />
+                    </label>
+                    <div
+                      className="chunk-card-body"
+                      onClick={() => !isEmbedded && onToggleChunk(chunk.id)}
+                    >
+                      <strong>{chunk.id}</strong>
+                      <p>{chunk.text}</p>
+                      <span>
+                        {String(chunk.metadata.source ?? "unknown")} · page {String(chunk.metadata.page ?? "-")}
+                      </span>
+                    </div>
+                    {isEmbedded && <span className="chunk-embedded-badge">已嵌入</span>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         ))}
       </div>
@@ -1876,7 +2007,7 @@ function failRunningUploadStep(steps: UploadStep[], error: string) {
 }
 
 function focusChunk(
-  chunkId: string,
+  chunk: Chunk,
   pages: OcrPage[],
   setSelectedPageNo: (pageNo: number) => void,
   _setSelectedBlock: (block: OcrBlock) => void,
@@ -1884,16 +2015,57 @@ function focusChunk(
   pendingRef: React.MutableRefObject<{ block: OcrBlock; pageNo: number; deferScroll?: boolean } | null>,
   setPendingVersion: (updater: (v: number) => number) => void,
 ) {
+  const targetPage = Number(chunk.metadata.page);
+  const blockId = String(chunk.metadata.block_id ?? "");
+  const metaChunkId = String(chunk.metadata.chunk_id ?? "");
+  const searchIds = [chunk.id];
+  if (metaChunkId && metaChunkId !== chunk.id) searchIds.push(metaChunkId);
+
+  function commit(pageNo: number, block: OcrBlock) {
+    setSelectedPageNo(pageNo);
+    pendingRef.current = { block, pageNo, deferScroll: true };
+    setPendingVersion((v) => v + 1);
+    setActiveView("ocr");
+  }
+
+  // Strategy 1: search all pages for block whose chunk_ids contains the chunk id
   for (const page of pages) {
-    const block = page.blocks.find((item) => item.chunk_ids.includes(chunkId));
+    const block = page.blocks.find((item) => item.chunk_ids.some((cid) => searchIds.includes(cid)));
     if (block) {
-      setSelectedPageNo(page.page_no);
-      pendingRef.current = { block, pageNo: page.page_no, deferScroll: true };
-      setPendingVersion((v) => v + 1);
-      setActiveView("ocr");
+      commit(page.page_no, block);
       return;
     }
   }
+
+  // Strategy 2: find block by block_id on the target page (from chunk metadata)
+  if (!isNaN(targetPage) && targetPage > 0 && blockId) {
+    const page = pages.find((p) => p.page_no === targetPage);
+    if (page) {
+      const block = page.blocks.find((b) => b.id === blockId);
+      if (block) {
+        commit(targetPage, block);
+        return;
+      }
+    }
+  }
+
+  // Strategy 3: find any block on the target page that matches searchIds (loose match)
+  if (!isNaN(targetPage) && targetPage > 0) {
+    const page = pages.find((p) => p.page_no === targetPage);
+    if (page) {
+      const block = page.blocks.find((item) => item.chunk_ids.some((cid) => searchIds.includes(cid)));
+      if (block) {
+        commit(targetPage, block);
+        return;
+      }
+    }
+  }
+
+  // Fallback: navigate to the page even if no block found
+  if (!isNaN(targetPage) && targetPage > 0) {
+    setSelectedPageNo(targetPage);
+  }
+  setActiveView("ocr");
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(<App />);

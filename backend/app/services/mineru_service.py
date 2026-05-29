@@ -126,6 +126,52 @@ class MineruService:
                     return chunk
         return None
 
+    def embed_chunks(self, document_id: str, chunk_ids: list[str], chroma_svc: Any) -> dict[str, Any] | None:
+        json_path = None
+        data = None
+        for path in self._json_files():
+            if path.stem == document_id:
+                json_path = path
+                data = self._read_json(path)
+                break
+
+        if data is None:
+            return None
+
+        chunks = data.get("chunks", [])
+        chunk_map = {c["id"]: c for c in chunks}
+
+        to_embed: list[dict[str, Any]] = []
+        skipped = 0
+        not_found = 0
+        for cid in chunk_ids:
+            chunk = chunk_map.get(cid)
+            if chunk is None:
+                not_found += 1
+            elif chunk.get("has_embedding"):
+                skipped += 1
+            else:
+                to_embed.append(chunk)
+
+        if to_embed:
+            ids = [c["id"] for c in to_embed]
+            documents = [c["text"] for c in to_embed]
+            metadatas = [c.get("metadata", {}) for c in to_embed]
+            success = chroma_svc.add_to_collection(document_id, ids, documents, metadatas)
+            if success:
+                for c in to_embed:
+                    c["has_embedding"] = True
+                    c["in_chroma"] = True
+                with json_path.open("w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+        return {
+            "embedded": len(to_embed),
+            "skipped": skipped,
+            "not_found": not_found,
+            "total": len(chunk_ids),
+        }
+
     def upload_and_parse(self, source_path: Path, original_name: str) -> dict[str, Any]:
         document_id = f"tmp{uuid4().hex[:8]}-{uuid4().hex[:8]}"
         upload_dir = self.settings.upload_dir
