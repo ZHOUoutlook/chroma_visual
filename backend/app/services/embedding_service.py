@@ -17,7 +17,19 @@ class EmbeddingService:
         try:
             from sentence_transformers import SentenceTransformer
 
-            self._model = SentenceTransformer(self._model_name)
+            settings = get_settings()
+            if settings.embedding_model_path:
+                self._model = SentenceTransformer(
+                    settings.embedding_model_path,
+                    local_files_only=True,
+                )
+            elif settings.embedding_local_only:
+                self._model = SentenceTransformer(
+                    self._model_name,
+                    local_files_only=True,
+                )
+            else:
+                self._model = SentenceTransformer(self._model_name)
             return True
         except Exception:
             return False

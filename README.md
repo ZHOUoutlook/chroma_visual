@@ -21,8 +21,9 @@ data/      示例 MinerU 解析数据
 ## 启动chroma数据库
 
 ```powershell
-chroma run --path E:\大模型\v_db  
+chroma run --path E:\大模型\v_db  --port 1212
 ```
+
 您可以使用以下参数进一步自定义 Chroma 服务器的运行方式：
 host - 定义服务器运行的主机名。默认值为 localhost。
 port - Chroma 服务器用于监听客户端请求的端口。默认端口为 8000。

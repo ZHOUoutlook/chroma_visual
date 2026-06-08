@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 from typing import Any
@@ -21,10 +21,17 @@ class ChromaService:
             return self._client
 
         try:
+            # 调试：打印实际值
+            # print(f"[DEBUG] host={self.settings.chroma_host!r} type={type(self.settings.chroma_host).__name__}")
+            # print(f"[DEBUG] port={self.settings.chroma_port!r} type={type(self.settings.chroma_port).__name__}")
+
             self._client = create_http_client(self.settings.chroma_host, self.settings.chroma_port)
             self._client.heartbeat()
             return self._client
-        except (ChromaImportError, Exception):
+        except (ChromaImportError, Exception) as exc:
+            print(f"[ChromaService] _get_client failed: {type(exc).__name__}: {exc}")
+            import traceback
+            traceback.print_exc()  # 打印完整堆栈
             self._client = None
             return None
 
@@ -221,8 +228,25 @@ class ChromaService:
             return False
 
 
-    @staticmethod
-    def _safe_collection_name(display_name: str) -> str:
+    def clear_collection(self, collection_name: str) -> int:
+        """Delete all records from a collection. Returns count of deleted records."""
+        client = self._get_client()
+        if client is None:
+            return -1
+        try:
+            collection = client.get_collection(collection_name)
+            if collection is None:
+                return 0
+            count = collection.count()
+            if count > 0:
+                all_ids = collection.get(include=[])["ids"]
+                if all_ids:
+                    collection.delete(ids=all_ids)
+            return count
+        except Exception:
+            return -1
+
+    def _safe_collection_name(self, display_name: str) -> str:
         safe = ''.join(c if c.isascii() and (c.isalnum() or c in '._-') else '_' for c in display_name)
         safe = safe.strip('_')
         if safe and len(safe) >= 3 and safe[0].isalnum():
