@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -126,6 +126,7 @@ const fallbackChunks: Chunk[] = fallbackRecords.slice(2, 4).map((record) => ({
 
 type Collection = {
   name: string;
+  display_name?: string;
   count: number;
   metadata: Record<string, unknown>;
   source: string;
@@ -427,6 +428,29 @@ function App() {
     await loadCollection(selectedCollection);
   }
 
+  async function handleClearCollection() {
+    if (!selectedCollection) return;
+    await api(`/api/chroma/collections/${selectedCollection}/clear`, { method: "DELETE" });
+    await loadCollection(selectedCollection);
+    await loadInitialData();
+  }
+  async function handleCreateCollection(name: string) {
+    if (!name.trim()) return;
+    await api("/api/chroma/collections", {
+      method: "POST",
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    setStatus(`Collection "${name.trim()}" 已创建`);
+    await loadInitialData();
+  }
+
+  async function handleDeleteCollection(name: string) {
+    if (!name) return;
+    await api(`/api/chroma/collections/${name}`, { method: "DELETE" });
+    setStatus(`Collection "${name}" 已删除`);
+    await loadInitialData();
+  }
+
   async function uploadDocument(file: File) {
     const formData = new FormData();
     formData.append("file", file);
@@ -562,8 +586,8 @@ function App() {
             </span>
             <select value={selectedCollection} onChange={(event) => setSelectedCollection(event.target.value)}>
               {collections.map((collection) => (
-                <option key={collection.name} value={collection.name}>
-                  {collection.name}
+                <option key={collection.display_name || collection.name} value={collection.display_name || collection.name}>
+                  {collection.display_name || collection.name}
                 </option>
               ))}
             </select>
@@ -577,7 +601,7 @@ function App() {
           </div>
         </header>
 
-        {activeView === "overview" && <Overview documents={documents} collections={collections} />}
+        {activeView === "overview" && <Overview documents={documents} collections={collections} onCreateCollection={handleCreateCollection} onDeleteCollection={handleDeleteCollection} />}
         {activeView === "upload" && (
           <UploadView
             uploading={uploading}
@@ -614,7 +638,7 @@ function App() {
             embeddedChunkIds={embeddedChunkIds}
           />
         )}
-        {activeView === "chroma" && <ChromaView records={records} points={points} onSelectPoint={setSelectedPoint} onDeleteRecord={handleDeleteRecord} />}
+        {activeView === "chroma" && <ChromaView records={records} points={points} onSelectPoint={setSelectedPoint} onDeleteRecord={handleDeleteRecord} onClearCollection={handleClearCollection} />}
         {activeView === "space" && (
           <VectorSpace points={points} selectedPoint={selectedPoint} highlightedIds={highlightedIds} queryResult={queryResult} onSelectPoint={setSelectedPoint} />
         )}
@@ -702,7 +726,10 @@ function UploadView({
   );
 }
 
-function Overview({ documents, collections }: { documents: DocumentItem[]; collections: Collection[] }) {
+function Overview({ documents, collections, onCreateCollection, onDeleteCollection }: { documents: DocumentItem[]; collections: Collection[]; onCreateCollection: (name: string) => void; onDeleteCollection: (name: string) => void }) {
+  const [newName, setNewName] = useState("");
+  const [creating, setCreating] = useState(false);
+
   return (
     <section className="grid two">
       <div className="panel">
@@ -734,9 +761,46 @@ function Overview({ documents, collections }: { documents: DocumentItem[]; colle
           <Metric label="Records" value={collections.reduce((sum, item) => sum + item.count, 0)} />
           <Metric label="数据源" value={collections[0]?.source ?? "-"} />
         </div>
+        <div className="collection-actions">
+          {creating ? (
+            <div className="inline-form">
+              <input
+                type="text"
+                placeholder="输入 Collection 名称"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newName.trim()) {
+                    onCreateCollection(newName.trim());
+                    setNewName("");
+                    setCreating(false);
+                  }
+                  if (e.key === "Escape") {
+                    setNewName("");
+                    setCreating(false);
+                  }
+                }}
+                autoFocus
+              />
+              <button className="primary" disabled={!newName.trim()} onClick={() => { onCreateCollection(newName.trim()); setNewName(""); setCreating(false); }}>
+                确认
+              </button>
+              <button onClick={() => { setNewName(""); setCreating(false); }}>取消</button>
+            </div>
+          ) : (
+            <button className="primary" onClick={() => setCreating(true)}>+ 创建 Collection</button>
+          )}
+        </div>
         <Table
-          headers={["名称", "数量", "来源"]}
-          rows={collections.map((collection) => [collection.name, collection.count, collection.source])}
+          headers={["名称", "数量", "来源", "操作"]}
+          rows={collections.map((collection) => [
+            collection.display_name || collection.name,
+            collection.count,
+            collection.source,
+            <button className="danger" onClick={() => { if (window.confirm(`确定删除 Collection "${collection.display_name || collection.name}" 吗？此操作不可恢复。`)) onDeleteCollection(collection.name); }} title="删除此 Collection">
+              <Trash2 size={14} />
+            </button>,
+          ]) as any }
         />
       </div>
     </section>
@@ -1596,7 +1660,7 @@ function ChunkView({
   );
 }
 
-function ChromaView({ records, points, onSelectPoint, onDeleteRecord }: { records: RecordItem[]; points: Point3D[]; onSelectPoint: (point: Point3D) => void; onDeleteRecord: (id: string) => void }) {
+function ChromaView({ records, points, onSelectPoint, onDeleteRecord, onClearCollection }: { records: RecordItem[]; points: Point3D[]; onSelectPoint: (point: Point3D) => void; onDeleteRecord: (id: string) => void; onClearCollection: () => void }) {
   const pointMap = useMemo(() => new Map(points.map((point) => [point.id, point])), [points]);
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
 
@@ -1616,7 +1680,12 @@ function ChromaView({ records, points, onSelectPoint, onDeleteRecord }: { record
   return (
     <section className="split">
       <div className="panel">
-        <h2>Records</h2>
+        <div className="records-header">
+          <h2>Records</h2>
+          <button className="clear-btn" onClick={onClearCollection} title="清空所有记录">
+            <Trash2 size={14} /> 清空
+          </button>
+        </div>
         <div className="record-list">
           {records.map((record) => (
             <button
@@ -1759,14 +1828,32 @@ function VectorSpace(props: {
                   point={point}
                   active={props.selectedPoint?.id === point.id}
                   highlighted={props.highlightedIds.has(point.id)}
+                  faded={props.queryResult != null && !props.highlightedIds.has(point.id)}
                   onClick={() => props.onSelectPoint(point)}
                 />
               ))}
               {props.queryResult && (
-                <mesh position={[props.queryResult.query_point.x, props.queryResult.query_point.y, props.queryResult.query_point.z]}>
-                  <sphereGeometry args={[0.055, 24, 24]} />
-                  <meshStandardMaterial color="#111827" />
-                </mesh>
+                <>
+                  {props.points
+                    .filter((p) => props.highlightedIds.has(p.id))
+                    .map((p) => (
+                      <Line
+                        key={`conn-${p.id}`}
+                        points={[
+                          [props.queryResult!.query_point.x, props.queryResult!.query_point.y, props.queryResult!.query_point.z],
+                          [p.x, p.y, p.z],
+                        ]}
+                        color="#c4b5fd"
+                        lineWidth={1}
+                        opacity={0.85}
+                        transparent
+                      />
+                    ))}
+                  <mesh position={[props.queryResult.query_point.x, props.queryResult.query_point.y, props.queryResult.query_point.z]}>
+                    <sphereGeometry args={[0.075, 24, 24]} />
+                    <meshStandardMaterial color="#ffffff" roughness={0.2} emissive="#7c3aed" emissiveIntensity={0.8} />
+                  </mesh>
+                </>
               )}
             </group>
           </Suspense>
@@ -1792,13 +1879,21 @@ function VectorSpace(props: {
   );
 }
 
-function VectorDot({ point, active, highlighted, onClick }: { point: Point3D; active: boolean; highlighted: boolean; onClick: () => void }) {
+function VectorDot({ point, active, highlighted, faded, onClick }: { point: Point3D; active: boolean; highlighted: boolean; faded: boolean; onClick: () => void }) {
   const color = active ? "#e11d48" : highlighted ? "#f59e0b" : colorBySource(String(point.metadata.source ?? point.id));
-  const size = active ? 0.06 : highlighted ? 0.052 : 0.038;
+  const size = active ? 0.065 : highlighted ? 0.07 : faded ? 0.032 : 0.038;
   return (
     <mesh position={[point.x, point.y, point.z]} onClick={(event) => { event.stopPropagation(); onClick(); }}>
       <sphereGeometry args={[size, 20, 20]} />
-      <meshStandardMaterial color={color} roughness={0.45} />
+      <meshStandardMaterial
+        color={color}
+        roughness={highlighted ? 0.15 : 0.45}
+        emissive={highlighted ? "#f59e0b" : "#000000"}
+        emissiveIntensity={highlighted ? 0.55 : 0}
+        transparent
+        opacity={faded ? 0.35 : 1}
+        depthWrite={!faded}
+      />
     </mesh>
   );
 }

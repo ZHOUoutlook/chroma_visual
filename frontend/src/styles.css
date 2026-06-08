@@ -1,4 +1,4 @@
-* {
+﻿* {
   box-sizing: border-box;
 }
 
@@ -958,6 +958,33 @@ th {
   position: relative;
 }
 
+.records-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.clear-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid #dbe5ef;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #94a3b8;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.clear-btn:hover {
+  color: #ef4444;
+  border-color: #ef4444;
+  background: #fef2f2;
+}
+
 .record-content {
   position: relative;
 }
@@ -1201,6 +1228,7 @@ th {
   flex-direction: column;
   gap: 10px;
   overflow: auto;
+  min-height: 0;
 }
 
 .space-layout,
@@ -1225,6 +1253,7 @@ th {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  overflow: hidden;
 }
 
 .query-controls textarea {
@@ -1322,4 +1351,69 @@ th {
   .three-panel {
     height: 520px;
   }
+}
+
+/* Collection actions */
+.collection-actions {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-form input {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  min-width: 220px;
+}
+
+button.danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff;
+  color: #ef4444;
+  cursor: pointer;
+}
+
+button.danger:hover {
+  background: #fef2f2;
+  border-color: #ef4444;
+}
+
+button.primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 8px;
+  background: #1d4ed8;
+  color: #ffffff;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.primary:hover {
+  background: #1e40af;
+}
+
+button.primary:disabled {
+  background: #93c5fd;
+  cursor: not-allowed;
 }

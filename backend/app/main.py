@@ -139,6 +139,26 @@ def list_collections():
     return chroma_service.list_collections()
 
 
+@app.post("/api/chroma/collections")
+def create_collection(payload: dict[str, Any]):
+    collection_name = payload.get("name", "").strip()
+    if not collection_name:
+        raise HTTPException(status_code=400, detail="Collection name is required")
+    metadata = payload.get("metadata", {})
+    success = chroma_service.create_collection(collection_name, metadata)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to create collection or Chroma unavailable")
+    return {"name": collection_name, "created": True}
+
+
+@app.delete("/api/chroma/collections/{collection_name}")
+def delete_collection(collection_name: str):
+    success = chroma_service.delete_collection(collection_name)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete collection or Chroma unavailable")
+    return {"name": collection_name, "deleted": True}
+
+
 @app.get("/api/chroma/status")
 def get_chroma_status():
     return chroma_service.status()
@@ -163,6 +183,14 @@ def delete_collection_records(collection_name: str, payload: dict[str, Any]):
     if not success:
         raise HTTPException(status_code=500, detail="Failed to delete records or Chroma unavailable")
     return {"deleted": len(record_ids)}
+
+
+@app.delete("/api/chroma/collections/{collection_name}/clear")
+def clear_collection(collection_name: str):
+    count = chroma_service.clear_collection(collection_name)
+    if count < 0:
+        raise HTTPException(status_code=500, detail="Failed to clear collection or Chroma unavailable")
+    return {"cleared": count}
 
 
 @app.get("/api/chroma/collections/{collection_name}/embedded-chunks/{document_id}")

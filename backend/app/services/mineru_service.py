@@ -130,30 +130,44 @@ class MineruService:
         return None
 
     @staticmethod
+    def _is_table_text(text: str) -> bool:
+        """Check if text is markdown table or HTML table content."""
+        stripped = text.strip()
+        # Markdown table: contains pipe-separated rows
+        if "|" in stripped:
+            lines = [ln.strip() for ln in stripped.split("\n") if ln.strip()]
+            pipe_lines = [ln for ln in lines if ln.startswith("|") and ln.endswith("|")]
+            if len(pipe_lines) >= 2:
+                return True
+        # HTML table
+        if "<table" in stripped.lower():
+            return True
+        return False
+
+    @staticmethod
     def _split_sentences(text: str) -> list[str]:
         """Split text into sentences for Chinese/English mixed content."""
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        # Normalize line breaks: join OCR-wrapped lines with space
+        text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
 
         result: list[str] = []
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
+        # Collapse multiple spaces into one
+        text = re.sub(r"\s{2,}", " ", text).strip()
+        if not text:
+            return result
 
-            parts = re.split(r"(?<=[。！？；!?])\s*", line)
+        parts = re.split(r"(?<=[。！？；!?])\s*", text)
 
-            for part in parts:
-                # Replace ". Capital" or ". Chinese" period with sentinel
-                # to split English sentences without splitting decimals like 3.14
-                modified = re.sub(
-                    r"([a-zA-Z]{2,})\.(\s+)([A-Z一-鿿])",
-                    lambda m: m.group(1) + "\x00" + m.group(2) + m.group(3),
-                    part,
-                )
-                for sub in modified.split("\x00"):
-                    sub = sub.strip()
-                    if sub and len(sub) >= 2:
-                        result.append(sub)
+        for part in parts:
+            modified = re.sub(
+                r"([a-zA-Z]{2,})\.(\s+)([A-Z一-鿿])",
+                lambda m: m.group(1) + "\x00" + m.group(2) + m.group(3),
+                part,
+            )
+            for sub in modified.split("\x00"):
+                sub = sub.strip()
+                if sub and len(sub) >= 2:
+                    result.append(sub)
 
         return result
 
@@ -194,18 +208,26 @@ class MineruService:
             all_metadatas: list[dict[str, Any]] = []
 
             for chunk in to_embed:
-                sentences = self._split_sentences(chunk["text"])
+                chunk_text = chunk["text"]
                 chunk_meta = chunk.get("metadata", {})
-                for idx, sentence in enumerate(sentences):
-                    sentence_id = f"{document_id}_{chunk['id']}_sent_{idx:04d}"
-                    sentence_meta = {
-                        **chunk_meta,
-                        "sentence_index": idx,
-                    }
+                if self._is_table_text(chunk_text):
+                    sentence_id = f"{document_id}_{chunk['id']}_sent_0000"
                     all_ids.append(sentence_id)
-                    all_documents.append(sentence)
-                    all_metadatas.append(sentence_meta)
+                    all_documents.append(chunk_text)
+                    all_metadatas.append({**chunk_meta, "sentence_index": 0})
                     total_sentences += 1
+                else:
+                    sentences = self._split_sentences(chunk_text)
+                    for idx, sentence in enumerate(sentences):
+                        sentence_id = f"{document_id}_{chunk['id']}_sent_{idx:04d}"
+                        sentence_meta = {
+                            **chunk_meta,
+                            "sentence_index": idx,
+                        }
+                        all_ids.append(sentence_id)
+                        all_documents.append(sentence)
+                        all_metadatas.append(sentence_meta)
+                        total_sentences += 1
 
             if all_ids:
                 all_embeddings = self.embedding_service.embed(all_documents)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from app.config import get_settings
@@ -44,11 +45,14 @@ class ChromaService:
         for item in collections:
             name = item if isinstance(item, str) else item.name
             collection = client.get_collection(name)
+            meta = getattr(collection, "metadata", None) or {}
+            display = meta.get("display_name", name)
             result.append(
                 {
                     "name": name,
+                    "display_name": display,
                     "count": collection.count(),
-                    "metadata": getattr(collection, "metadata", None) or {},
+                    "metadata": meta,
                     "source": "chroma",
                 }
             )
@@ -212,6 +216,38 @@ class ChromaService:
             if embeddings:
                 kwargs["embeddings"] = embeddings
             collection.add(**kwargs)
+            return True
+        except Exception:
+            return False
+
+
+    @staticmethod
+    def _safe_collection_name(display_name: str) -> str:
+        safe = ''.join(c if c.isascii() and (c.isalnum() or c in '._-') else '_' for c in display_name)
+        safe = safe.strip('_')
+        if safe and len(safe) >= 3 and safe[0].isalnum():
+            h = hashlib.md5(display_name.encode('utf-8')).hexdigest()[:8]
+            return f'{safe[:48]}_{h}'
+        h = hashlib.md5(display_name.encode('utf-8')).hexdigest()[:12]
+        return f'coll_{h}'
+
+    def create_collection(self, collection_name: str, metadata: dict[str, Any] | None = None) -> bool:
+        client = self._get_client()
+        if client is None:
+            return False
+        try:
+            safe_name = self._safe_collection_name(collection_name)
+            client.get_or_create_collection(name=safe_name, metadata={**(metadata or {}), 'display_name': collection_name})
+            return True
+        except Exception:
+            return False
+
+    def delete_collection(self, collection_name: str) -> bool:
+        client = self._get_client()
+        if client is None:
+            return False
+        try:
+            client.delete_collection(name=collection_name)
             return True
         except Exception:
             return False
