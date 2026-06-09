@@ -1,6 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from typing import Any
+import httpx
 
 from app.config import get_settings
 
@@ -9,37 +9,25 @@ class EmbeddingService:
     def __init__(self, model_name: str | None = None) -> None:
         settings = get_settings()
         self._model_name = model_name or settings.embedding_model
-        self._model: Any = None
-
-    def _load(self) -> bool:
-        if self._model is not None:
-            return True
-        try:
-            from sentence_transformers import SentenceTransformer
-
-            settings = get_settings()
-            if settings.embedding_model_path:
-                self._model = SentenceTransformer(
-                    settings.embedding_model_path,
-                    local_files_only=True,
-                )
-            elif settings.embedding_local_only:
-                self._model = SentenceTransformer(
-                    self._model_name,
-                    local_files_only=True,
-                )
-            else:
-                self._model = SentenceTransformer(self._model_name)
-            return True
-        except Exception:
-            return False
+        self._api_base_url = settings.embedding_api_base_url
+        self._api_key = settings.embedding_api_key
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        if not self._load():
-            return [[] for _ in texts]
-        embeddings = self._model.encode(texts, normalize_embeddings=True)
-        return [vec.tolist() for vec in embeddings]
+        return self._embed_api(texts)
+
+    def _embed_api(self, texts: list[str]) -> list[list[float]]:
+        url = self._api_base_url.rstrip("/") + "/v1/embeddings"
+        payload = {"input": texts, "model": self._model_name}
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        results = sorted(data["data"], key=lambda x: x["index"])
+        return [item["embedding"] for item in results]
 
     @property
     def ready(self) -> bool:
-        return self._load()
+        return bool(self._api_base_url)

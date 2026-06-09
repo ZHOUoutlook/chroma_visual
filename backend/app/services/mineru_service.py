@@ -483,8 +483,8 @@ class MineruService:
 
         text = self._extract_block_text(block)
 
-        block_id = str(block.get("id") or f"mineru_block_{index + 1:03d}")
-        chunk_id = f"mineru_block_{index + 1:03d}"
+        block_id = str(block.get("id") or f"mineru_block_{index:03d}")
+        chunk_id = f"mineru_block_{index:03d}"
 
         return {
             "id": block_id,
