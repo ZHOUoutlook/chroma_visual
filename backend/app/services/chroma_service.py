@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from typing import Any
 
 from app.config import get_settings
@@ -15,6 +16,7 @@ class ChromaService:
         self.settings = get_settings()
         self._client = None
         self._embedding_service = embedding_svc or EmbeddingService()
+        self._write_lock = threading.Lock()
 
     def _get_client(self) -> Any | None:
         if self._client is not None:
@@ -204,50 +206,53 @@ class ChromaService:
         return sorted(chunk_ids)
 
     def delete_records(self, collection_name: str, record_ids: list[str]) -> bool:
-        client = self._get_client()
-        if client is None:
-            return False
-        try:
-            collection = client.get_collection(collection_name)
-            if collection is None:
+        with self._write_lock:
+            client = self._get_client()
+            if client is None:
                 return False
-            collection.delete(ids=record_ids)
-            return True
-        except Exception:
-            return False
+            try:
+                collection = client.get_collection(collection_name)
+                if collection is None:
+                    return False
+                collection.delete(ids=record_ids)
+                return True
+            except Exception:
+                return False
 
     def add_to_collection(self, collection_name: str, ids: list[str], documents: list[str], metadatas: list[dict[str, Any]], embeddings: list[list[float]] | None = None) -> bool:
-        client = self._get_client()
-        if client is None:
-            return False
-        try:
-            collection = client.get_or_create_collection(name=collection_name)
-            kwargs: dict[str, Any] = {"ids": ids, "documents": documents, "metadatas": metadatas}
-            if embeddings:
-                kwargs["embeddings"] = embeddings
-            collection.add(**kwargs)
-            return True
-        except Exception:
-            return False
+        with self._write_lock:
+            client = self._get_client()
+            if client is None:
+                return False
+            try:
+                collection = client.get_or_create_collection(name=collection_name)
+                kwargs: dict[str, Any] = {"ids": ids, "documents": documents, "metadatas": metadatas}
+                if embeddings:
+                    kwargs["embeddings"] = embeddings
+                collection.add(**kwargs)
+                return True
+            except Exception:
+                return False
 
 
     def clear_collection(self, collection_name: str) -> int:
         """Delete all records from a collection. Returns count of deleted records."""
-        client = self._get_client()
-        if client is None:
-            return -1
-        try:
-            collection = client.get_collection(collection_name)
-            if collection is None:
-                return 0
-            count = collection.count()
-            if count > 0:
-                all_ids = collection.get(include=[])["ids"]
-                if all_ids:
-                    collection.delete(ids=all_ids)
-            return count
-        except Exception:
-            return -1
+        with self._write_lock:
+            client = self._get_client()
+            if client is None:
+                return -1
+            try:
+                collection = client.get_collection(collection_name)
+                if collection is None:
+                    return 0
+                count = collection.count()
+                if count > 0:
+                    all_ids = collection.get(include=[])["ids"]
+                    if all_ids:
+                        collection.delete(ids=all_ids)
+                return count
+            except Exception:
+                return -1
 
     def _safe_collection_name(self, display_name: str) -> str:
         safe = ''.join(c if c.isascii() and (c.isalnum() or c in '._-') else '_' for c in display_name)
@@ -259,25 +264,27 @@ class ChromaService:
         return f'coll_{h}'
 
     def create_collection(self, collection_name: str, metadata: dict[str, Any] | None = None) -> bool:
-        client = self._get_client()
-        if client is None:
-            return False
-        try:
-            safe_name = self._safe_collection_name(collection_name)
-            client.get_or_create_collection(name=safe_name, metadata={**(metadata or {}), 'display_name': collection_name})
-            return True
-        except Exception:
-            return False
+        with self._write_lock:
+            client = self._get_client()
+            if client is None:
+                return False
+            try:
+                safe_name = self._safe_collection_name(collection_name)
+                client.get_or_create_collection(name=safe_name, metadata={**(metadata or {}), 'display_name': collection_name})
+                return True
+            except Exception:
+                return False
 
     def delete_collection(self, collection_name: str) -> bool:
-        client = self._get_client()
-        if client is None:
-            return False
-        try:
-            client.delete_collection(name=collection_name)
-            return True
-        except Exception:
-            return False
+        with self._write_lock:
+            client = self._get_client()
+            if client is None:
+                return False
+            try:
+                client.delete_collection(name=collection_name)
+                return True
+            except Exception:
+                return False
 
     def _format_query_result(self, collection_name: str, query_text: str, data: dict[str, Any]) -> dict[str, Any]:
         ids = (data.get("ids") or [[]])[0]

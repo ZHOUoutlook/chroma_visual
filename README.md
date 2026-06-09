@@ -104,22 +104,61 @@ curl.exe -X POST http://localhost:1212/api/v2/pre-flight-checks
 
 ## 启动后端
 
+Windows：
+
 ```powershell
 .\scripts\start-backend.ps1
+```
+
+Linux/macOS：
+
+```bash
+chmod +x scripts/start-backend.sh
+./scripts/start-backend.sh
 ```
 
 如果 Chroma 不可用，后端会返回内置示例数据，方便先验证页面。
 
 ## 启动前端
 
+Windows：
+
 ```powershell
 .\scripts\start-frontend.ps1
+```
+
+Linux/macOS：
+
+```bash
+chmod +x scripts/start-frontend.sh
+./scripts/start-frontend.sh
 ```
 
 默认访问：
 ```text
 http://localhost:5173
 ```
+
+## scripts 脚本说明
+
+`scripts` 目录里的脚本分为三类：
+
+### 启动项目
+
+- `start-backend.ps1`：Windows 启动后端。进入 `backend`，安装 `requirements.txt`，然后用 `uvicorn` 启动 FastAPI，端口 `8010`。
+- `start-backend.sh`：Linux/macOS 版后端启动脚本，逻辑一样。
+- `start-frontend.ps1`：Windows 启动前端。进入 `frontend`，执行 `npm install`，再执行 `npm run dev`。
+- `start-frontend.sh`：Linux/macOS 版前端启动脚本，逻辑一样。
+
+### 备份 Chroma
+
+- `backup-chroma.ps1`：Windows 手动备份 Chroma 数据库。默认备份 `E:\大模型\v_db` 到 `E:\大模型\v_db_backup_时间戳`，先请求 Chroma 优雅停止，等待 5 秒，复制目录，然后重启 Chroma。
+- `backup-chroma.sh`：Linux/macOS 版备份脚本。默认源目录是 `/data/v_db`，备份到 `/data/v_db_backup_时间戳`，也会停止、备份、重启 Chroma。
+
+### 安装定时任务
+
+- `schedule-backup-chroma.ps1`：Windows 注册“任务计划程序”任务，默认每天 `03:00` 跑一次 `backup-chroma.ps1`，默认保留 7 天备份。
+- `schedule-backup-chroma.sh`：Linux/macOS 写入 `crontab`，默认每天凌晨 3 点跑一次 `backup-chroma.sh`，日志写到 `/tmp/chroma-backup.log`。
 
 ## 配置说明
 
