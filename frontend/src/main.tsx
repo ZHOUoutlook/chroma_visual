@@ -272,7 +272,7 @@ function App() {
   const [nativeResult, setNativeResult] = useState<Record<string, unknown> | null>(null);
   const [selectedPageNo, setSelectedPageNo] = useState(1);
   const [selectedBlock, setSelectedBlock] = useState<OcrBlock | null>(null);
-  const pendingChunkTargetRef = useRef<{ block: OcrBlock; pageNo: number; deferScroll?: boolean } | null>(null);
+  const pendingChunkTargetRef = useRef<{ block?: OcrBlock; pageNo: number; deferScroll?: boolean; chunkId?: string; blkId?: string } | null>(null);
   const [pendingVersion, setPendingVersion] = useState(0);
   const [chunks, setChunks] = useState<Chunk[]>([]);
   const [selectedPoint, setSelectedPoint] = useState<Point3D | null>(null);
@@ -290,29 +290,42 @@ function App() {
   const [embeddingMessage, setEmbeddingMessage] = useState("");
   const [embeddedChunkIds, setEmbeddedChunkIds] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
-    void loadInitialData();
-  }, []);
+  const preloadDoneRef = useRef(false);
 
+  // 启动时后台静默预取 records 和 3D embeddings（仅一次）
   useEffect(() => {
-    if (!selectedCollection) return;
-    void loadCollection(selectedCollection);
+    if (!selectedCollection || preloadDoneRef.current) return;
+    preloadDoneRef.current = true;
+    const timer = setTimeout(() => {
+      void loadCollection(selectedCollection);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [selectedCollection]);
 
+  // OCR 页面：加载 native；Chunk 页面：仅加载 chunks
   useEffect(() => {
     if (!selectedDocument) return;
-    void loadDocument(selectedDocument);
-  }, [selectedDocument]);
-
-  useEffect(() => {
-    if (!selectedCollection || !selectedDocument) {
+    if (activeView === "ocr") {
+      void loadDocument(selectedDocument);
+    } else if (activeView === "chunks") {
+      api<Chunk[]>(`/api/documents/${selectedDocument}/chunks`)
+        .then((data) => setChunks(data))
+        .catch(() => setChunks(fallbackChunks));
+      if (selectedCollection) {
+        api<string[]>(`/api/chroma/collections/${selectedCollection}/embedded-chunks/${selectedDocument}`)
+          .then((ids) => setEmbeddedChunkIds(new Set(ids)))
+          .catch(() => setEmbeddedChunkIds(new Set()));
+      }
+    } else {
       setEmbeddedChunkIds(new Set());
-      return;
     }
-    api<string[]>(`/api/chroma/collections/${selectedCollection}/embedded-chunks/${selectedDocument}`)
-      .then((ids) => setEmbeddedChunkIds(new Set(ids)))
-      .catch(() => setEmbeddedChunkIds(new Set()));
-  }, [selectedCollection, selectedDocument]);
+  }, [activeView, selectedDocument, selectedCollection]);
+
+  // 进入知识库总览时刷新列表
+  useEffect(() => {
+    if (activeView !== "overview") return;
+    void loadInitialData();
+  }, [activeView]);
 
   const selectedPage = useMemo(
     () => pages.find((page) => page.page_no === selectedPageNo) ?? pages[0],
@@ -368,16 +381,19 @@ function App() {
 
   async function loadDocument(documentId: string) {
     try {
-      const [pageList, chunkList] = await Promise.all([
-        api<OcrPage[]>(`/api/documents/${documentId}/pages`),
-        api<Chunk[]>(`/api/documents/${documentId}/chunks`),
-      ]);
-      const native = await api<Record<string, unknown>>(`/api/documents/${documentId}/native`).catch(() => null);
+      const native = await api<any>(`/api/documents/${documentId}/native`);
+      const fallbackFileUrl: string = native.file_url || "";
+      const pageList: OcrPage[] = (native.pages || []).map((p: any) => ({
+        ...p,
+        file_url: p.file_url || fallbackFileUrl,
+      }));
       setPages(pageList);
-      setChunks(chunkList);
       setNativeResult(native);
-      setSelectedPageNo(pageList[0]?.page_no ?? 1);
-      setSelectedBlock(pageList[0]?.blocks[0] ?? null);
+      // 若有 pending chunk target（从 chunk 页面跳转过来），不覆盖已设置的页码和 block
+      if (!pendingChunkTargetRef.current) {
+        setSelectedPageNo(pageList[0]?.page_no ?? 1);
+        setSelectedBlock(pageList[0]?.blocks[0] ?? null);
+      }
     } catch (error) {
       setPages(fallbackPages);
       setChunks(fallbackChunks);
@@ -534,13 +550,14 @@ function App() {
         `已处理 ${result.embedded} 个 chunk，生成 ${result.sentences} 个句子向量，跳过 ${result.skipped} 个${result.not_found > 0 ? `，未找到 ${result.not_found} 个` : ""}`,
       );
       setSelectedChunkIds(new Set());
-      await loadDocument(selectedDocument);
       // Refresh embedded chunk IDs from the collection
       if (selectedCollection) {
         api<string[]>(`/api/chroma/collections/${selectedCollection}/embedded-chunks/${selectedDocument}`)
           .then((ids) => setEmbeddedChunkIds(new Set(ids)))
           .catch(() => {});
       }
+      // 后台静默刷新 Chroma records 和 3D embeddings
+      void loadCollection(selectedCollection);
     } catch (error) {
       setEmbeddingMessage(`嵌入失败：${String(error)}`);
     } finally {
@@ -1059,7 +1076,7 @@ function OcrView(props: {
   nativeResult: Record<string, unknown> | null;
   onSelectPage: (pageNo: number) => void;
   onSelectBlock: (block: OcrBlock) => void;
-  pendingChunkTargetRef?: React.MutableRefObject<{ block: OcrBlock; pageNo: number; deferScroll?: boolean } | null>;
+  pendingChunkTargetRef?: React.MutableRefObject<{ block?: OcrBlock; pageNo: number; deferScroll?: boolean; chunkId?: string; blkId?: string } | null>;
   pendingVersion?: number;
 }) {
   const page = props.selectedPage;
@@ -1088,11 +1105,26 @@ function OcrView(props: {
     if (!ref) return;
     const pending = ref.current;
     if (pending && pending.pageNo === pageNo) {
+      let targetBlock = pending.block;
+      if (!targetBlock) {
+        // Search loaded page for matching block by chunkId or blkId
+        const page = props.pages.find((p) => p.page_no === pageNo);
+        if (page && pending.chunkId) {
+          targetBlock = page.blocks.find((b) => b.chunk_ids.includes(pending.chunkId!));
+        }
+        if (!targetBlock && page && pending.blkId) {
+          targetBlock = page.blocks.find((b) => b.id === pending.blkId);
+        }
+      }
+      if (!targetBlock) return;
       ref.current = null;
       navigationGuardUntilRef.current = Date.now() + 800;
       props.onSelectPage(pageNo);
       scrollToPage(pageNo, "smooth");
-      props.onSelectBlock(pending.block);
+      // 延迟选中 block，等自动首 block 定位完成后再覆盖
+      setTimeout(() => {
+        props.onSelectBlock(targetBlock);
+      }, 150);
     }
   };
 
@@ -1294,31 +1326,6 @@ function MarkdownResultPanel({
     () => JSON.stringify(nativeResult ?? { pages }, null, 2),
     [nativeResult, pages],
   );
-
-  // #region agent log
-  useEffect(() => {
-    const firstBlock = firstBlockOfPage(pages, selectedPageNo);
-    fetch("http://127.0.0.1:7837/ingest/ccefa4c6-daa7-4883-8e5b-ede288b2180e", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "eb7c4d" },
-      body: JSON.stringify({
-        sessionId: "eb7c4d",
-        runId: "page-sync",
-        hypothesisId: "sync",
-        location: "main.tsx:MarkdownResultPanel",
-        message: "page block sync scroll",
-        data: {
-          selectedPageNo,
-          selectedBlockId: selectedBlock?.id ?? null,
-          firstBlockId: firstBlock?.id ?? null,
-          scrollKey: selectedBlock?.id ? blockKey(selectedPageNo, selectedBlock.id) : null,
-          refExists: selectedBlock?.id ? Boolean(blockRefs.current[blockKey(selectedPageNo, selectedBlock.id)]) : false,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }, [pages, selectedBlock?.id, selectedPageNo]);
-  // #endregion
 
   function scrollMarkdownBlockToTop(pageNo: number, blockId: string) {
     const container = markdownPreviewRef.current;
@@ -2174,7 +2181,7 @@ function focusChunk(
   setSelectedPageNo: (pageNo: number) => void,
   _setSelectedBlock: (block: OcrBlock) => void,
   setActiveView: (view: string) => void,
-  pendingRef: React.MutableRefObject<{ block: OcrBlock; pageNo: number; deferScroll?: boolean } | null>,
+  pendingRef: React.MutableRefObject<{ block?: OcrBlock; pageNo: number; deferScroll?: boolean; chunkId?: string; blkId?: string } | null>,
   setPendingVersion: (updater: (v: number) => number) => void,
 ) {
   const targetPage = Number(chunk.metadata.page);
@@ -2223,9 +2230,11 @@ function focusChunk(
     }
   }
 
-  // Fallback: navigate to the page even if no block found
+  // Fallback / pages empty: set pending target for OCR page to resolve after loading
   if (!isNaN(targetPage) && targetPage > 0) {
     setSelectedPageNo(targetPage);
+    pendingRef.current = { pageNo: targetPage, deferScroll: true, chunkId: chunk.id, blkId: blockId };
+    setPendingVersion((v) => v + 1);
   }
   setActiveView("ocr");
 }
