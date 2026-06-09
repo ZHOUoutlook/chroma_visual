@@ -5,7 +5,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.sample_data import SAMPLE_RECORDS
-from app.services.compat_chroma import ChromaImportError, create_http_client
+from app.services.compat_chroma import ChromaImportError, create_http_client, create_persistent_client
 from app.services.embedding_service import EmbeddingService
 from app.services.projection import project_to_3d
 
@@ -21,19 +21,22 @@ class ChromaService:
             return self._client
 
         try:
-            # 调试：打印实际值
-            # print(f"[DEBUG] host={self.settings.chroma_host!r} type={type(self.settings.chroma_host).__name__}")
-            # print(f"[DEBUG] port={self.settings.chroma_port!r} type={type(self.settings.chroma_port).__name__}")
-
-            self._client = create_http_client(self.settings.chroma_host, self.settings.chroma_port)
+            if self.settings.chroma_host:
+                self._client = create_http_client(self.settings.chroma_host, self.settings.chroma_port)
+            else:
+                self._client = create_persistent_client(self.settings.chroma_db_path)
             self._client.heartbeat()
             return self._client
         except (ChromaImportError, Exception) as exc:
             print(f"[ChromaService] _get_client failed: {type(exc).__name__}: {exc}")
             import traceback
-            traceback.print_exc()  # 打印完整堆栈
+            traceback.print_exc()
             self._client = None
             return None
+
+    def close(self) -> None:
+        """Release ChromaDB client resources."""
+        self._client = None
 
     def list_collections(self) -> list[dict[str, Any]]:
         client = self._get_client()

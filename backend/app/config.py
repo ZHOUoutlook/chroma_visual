@@ -7,8 +7,9 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
-    chroma_host: str = Field(default="localhost", alias="CHROMA_HOST")
-    chroma_port: int = Field(default=8000, alias="CHROMA_PORT")
+    chroma_host: str = Field(default="", alias="CHROMA_HOST")
+    chroma_port: int = Field(default=0, alias="CHROMA_PORT")
+    chroma_db_path: str = Field(default="./chroma_db", alias="CHROMA_DB_PATH")
     mineru_api_key: str = Field(default="", alias="MINERU_API_KEY")
     mineru_api_base_url: str = Field(default="https://mineru.net", alias="MINERU_API_BASE_URL")
     mineru_poll_timeout_seconds: int = Field(default=90, alias="MINERU_POLL_TIMEOUT_SECONDS")

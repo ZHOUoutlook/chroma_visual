@@ -32,6 +32,11 @@ mineru_service.settings.mineru_meta_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=mineru_service.settings.upload_dir), name="uploads")
 app.mount("/mineru-assets", StaticFiles(directory=mineru_service.settings.mineru_assets_dir), name="mineru-assets")
 
+@app.on_event("shutdown")
+def shutdown() -> None:
+    """Gracefully release ChromaDB resources on app shutdown."""
+    chroma_service.close()
+
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
