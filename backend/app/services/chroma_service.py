@@ -92,7 +92,7 @@ class ChromaService:
                 "message": f"Chroma 连接异常：{exc}",
             }
 
-    def get_collection_records(self, collection_name: str, limit: int = 200) -> list[dict[str, Any]]:
+    def get_collection_records(self, collection_name: str, limit: int = 10000) -> list[dict[str, Any]]:
         collection = self._get_collection(collection_name)
         if collection is None:
             return SAMPLE_RECORDS[:limit]
