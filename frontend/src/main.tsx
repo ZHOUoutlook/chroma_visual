@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -259,12 +259,102 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json();
 }
 
+
+// ── SWR 轻量缓存 hook：stale-while-revalidate ──
+const SWR_TTL_MS = 30_000; // 缓存 30 秒后自动 revalidate
+const swrCache = new Map<string, { data: any; promise: Promise<any> | null; ts: number }>();
+
+function useSWR<T>(key: string | null, fetcher: () => Promise<T>, fallback: T) {
+  const fetcherRef = useRef(fetcher);
+  fetcherRef.current = fetcher;
+
+  const [revalidating, setRevalidating] = useState(false);
+  const [data, setData] = useState<T>(() => {
+    const entry = key ? swrCache.get(key) : undefined;
+    return (entry?.data as T) ?? fallback;
+  });
+
+  useEffect(() => {
+    if (!key) return;
+    let cancelled = false;
+    const entry = swrCache.get(key);
+
+    // 检查 TTL：过期则视为 miss，强制重新 fetch
+    const expired = entry?.ts !== undefined && (Date.now() - entry.ts > SWR_TTL_MS);
+    const hasFreshData = entry?.data !== undefined && !expired;
+
+    if (hasFreshData) {
+      console.log("[SWR] cache hit, instant render:", key, "records:", (entry.data as any)?.length);
+      setData(entry.data as T);
+    } else {
+      console.log("[SWR] cache miss" + (expired ? " (expired)" : "") + ", will fetch:", key);
+    }
+
+    // 去重：复用进行中的请求
+    if (entry?.promise) {
+      console.log("[SWR] dedup: reusing in-flight promise for:", key);
+      setRevalidating(true);
+      entry.promise.then((fresh) => { if (!cancelled) { setData(fresh as T); setRevalidating(false); } });
+      return;
+    }
+
+    setRevalidating(true);
+    const promise = fetcherRef.current()
+      .then((fresh) => {
+        console.log("[SWR] fetch done, cached:", key, "records:", (fresh as any)?.length);
+        swrCache.set(key, { data: fresh, promise: null, ts: Date.now() });
+        if (!cancelled) { setData(fresh); setRevalidating(false); }
+        return fresh;
+      })
+      .catch(() => {
+        swrCache.set(key, { data: entry?.data ?? fallback, promise: null, ts: entry?.ts ?? 0 });
+        if (!cancelled) {
+          if (entry?.data === undefined) setData(fallback);
+          setRevalidating(false);
+        }
+      });
+
+    swrCache.set(key, { data: entry?.data ?? fallback, promise, ts: entry?.ts ?? 0 });
+    return () => { cancelled = true; };
+  }, [key]);
+
+  const mutate = useCallback(async () => {
+    if (!key) return;
+    console.log("[SWR] mutate: clearing cache for:", key);
+    swrCache.delete(key);
+    setRevalidating(true);
+    try {
+      const fresh = await fetcherRef.current();
+      swrCache.set(key, { data: fresh, promise: null, ts: Date.now() });
+      setData(fresh);
+    } catch { /* 刷新失败保留旧数据 */ }
+    finally { setRevalidating(false); }
+  }, [key]);
+
+  return { data, loading: !key || !swrCache.has(key), revalidating, mutate } as { data: T; loading: boolean; revalidating: boolean; mutate: () => Promise<void> };
+}
 function App() {
   const [activeView, setActiveView] = useState("overview");
   const [collections, setCollections] = useState<Collection[]>([]);
   const [selectedCollection, setSelectedCollection] = useState("");
-  const [records, setRecords] = useState<RecordItem[]>([]);
-  const [points, setPoints] = useState<Point3D[]>([]);
+
+
+  // records：仅 Chroma 内容页面加载
+  const recordsKey = useMemo(() => {
+    if (!selectedCollection) return null;
+    if (activeView === "chroma") return "records:" + selectedCollection;
+    return null;
+  }, [selectedCollection, activeView]);
+
+  // embeddings/3d：仅 3D 向量空间 / 查询可视化页面加载
+  const pointsKey = useMemo(() => {
+    if (!selectedCollection) return null;
+    if (activeView === "space" || activeView === "query") return "points:" + selectedCollection;
+    return null;
+  }, [selectedCollection, activeView]);
+
+  const { data: records = fallbackRecords, mutate: mutateRecords } = useSWR(recordsKey, () => api<RecordItem[]>(`/api/chroma/collections/${selectedCollection}/records`), fallbackRecords);
+  const { data: points = fallbackPoints, mutate: mutatePoints } = useSWR(pointsKey, () => api<Point3D[]>(`/api/chroma/collections/${selectedCollection}/embeddings/3d`), fallbackPoints);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [selectedDocument, setSelectedDocument] = useState("");
   const [pages, setPages] = useState<OcrPage[]>([]);
@@ -274,7 +364,16 @@ function App() {
   const pendingChunkTargetRef = useRef<{ block?: OcrBlock; pageNo: number; deferScroll?: boolean; chunkId?: string; blkId?: string } | null>(null);
   const [pendingVersion, setPendingVersion] = useState(0);
   const [chunks, setChunks] = useState<Chunk[]>([]);
+
   const [selectedPoint, setSelectedPoint] = useState<Point3D | null>(null);
+
+  // points 变化时自动选第一个（若当前选中点已不在列表中）
+  useEffect(() => {
+    if (points.length > 0) {
+      const inList = selectedPoint && points.some((p) => p.id === selectedPoint.id);
+      if (!inList) setSelectedPoint(points[0]);
+    }
+  }, [points]);
   const [query, setQuery] = useState("什么是向量数据库？");
   const [topK, setTopK] = useState(5);
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
@@ -287,15 +386,6 @@ function App() {
   const [selectedChunkIds, setSelectedChunkIds] = useState<Set<string>>(new Set());
   const [embeddingBusy, setEmbeddingBusy] = useState(false);
   const [embeddingMessage, setEmbeddingMessage] = useState("");
-
-  // 切换集合时加载 records 和 3D embeddings（所有页面通用）
-  useEffect(() => {
-    if (!selectedCollection) return;
-    const timer = setTimeout(() => {
-      void loadCollection(selectedCollection);
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [selectedCollection]);
 
   // OCR 页面：加载 native；Chunk 页面：仅加载 chunks
   useEffect(() => {
@@ -364,23 +454,6 @@ function App() {
     }
   }
 
-  async function loadCollection(collection: string) {
-    try {
-      const [recordList, pointList] = await Promise.all([
-        api<RecordItem[]>(`/api/chroma/collections/${collection}/records`),
-        api<Point3D[]>(`/api/chroma/collections/${collection}/embeddings/3d`),
-      ]);
-      setRecords(recordList);
-      setPoints(pointList);
-      setSelectedPoint(pointList[0] ?? null);
-    } catch (error) {
-      setRecords(fallbackRecords);
-      setPoints(fallbackPoints);
-      setSelectedPoint(fallbackPoints[0]);
-      setStatus(`Collection 接口不可用，正在使用示例点云：${String(error)}`);
-    }
-  }
-
   async function loadDocument(documentId: string) {
     try {
       const native = await api<any>(`/api/documents/${documentId}/native`);
@@ -443,7 +516,8 @@ function App() {
       method: "DELETE",
       body: JSON.stringify({ ids: [recordId] }),
     });
-    await loadCollection(selectedCollection);
+    await mutateRecords();
+    await mutatePoints();
   }
 
 
@@ -460,7 +534,8 @@ function App() {
   async function handleClearCollection() {
     if (!selectedCollection) return;
     await api(`/api/chroma/collections/${selectedCollection}/clear`, { method: "DELETE" });
-    await loadCollection(selectedCollection);
+    await mutateRecords();
+    await mutatePoints();
     await loadInitialData();
   }
   async function handleCreateCollection(name: string) {
@@ -568,7 +643,8 @@ function App() {
         .then((data) => setChunks(data))
         .catch(() => {});
       // 后台静默刷新 Chroma records 和 3D embeddings
-      void loadCollection(selectedCollection);
+      void mutateRecords();
+      void mutatePoints();
     } catch (error) {
       setEmbeddingMessage(`嵌入失败：${String(error)}`);
     } finally {

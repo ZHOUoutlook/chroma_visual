@@ -122,8 +122,8 @@ def get_chroma_status():
 
 
 @app.get("/api/chroma/collections/{collection_name}/records")
-def get_collection_records(collection_name: str, limit: int = 10000):
-    return chroma_service.get_collection_records(collection_name, limit)
+def get_collection_records(collection_name: str, limit: int = 500, offset: int = 0):
+    return chroma_service.get_collection_records(collection_name, limit, offset, include_embeddings=False)
 
 
 @app.delete("/api/chroma/collections/{collection_name}/records")

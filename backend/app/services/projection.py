@@ -18,7 +18,7 @@ def _do_pca(vectors: list[list[float]], n_components: int = 3):
     return coords / max_abs, pca, max_abs
 
 
-def project_to_3d(embeddings: Iterable[Iterable[float]]) -> list[dict[str, float]]:
+def project_to_3d(embeddings: Iterable[Iterable[float]], max_samples: int = 2000) -> list[dict[str, float]]:
     vectors = [list(map(float, vector)) for vector in embeddings if vector]
     if not vectors:
         return []
@@ -27,7 +27,20 @@ def project_to_3d(embeddings: Iterable[Iterable[float]]) -> list[dict[str, float
         if len(vectors) == 1:
             return [{"x": 0.0, "y": 0.0, "z": 0.0}]
 
-        coords, _, _ = _do_pca(vectors)
+        # 大集合采样 PCA：用子集拟合变换矩阵，再变换全量
+        if len(vectors) > max_samples:
+            import random
+            indices = sorted(random.sample(range(len(vectors)), max_samples))
+            sample = [vectors[i] for i in indices]
+            _, pca, max_abs = _do_pca(sample)
+            import numpy as np
+            matrix = np.array(vectors, dtype=float)
+            coords = pca.transform(matrix) / max_abs
+            if coords.shape[1] < 3:
+                coords = np.pad(coords, ((0, 0), (0, 3 - coords.shape[1])))
+        else:
+            coords, _, _ = _do_pca(vectors)
+
         return [{"x": float(row[0]), "y": float(row[1]), "z": float(row[2])} for row in coords]
     except Exception as exc:
         import logging

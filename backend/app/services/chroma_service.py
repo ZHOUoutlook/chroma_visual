@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import time
 from typing import Any
 
 from app.config import get_settings
@@ -17,6 +18,7 @@ class ChromaService:
         self._client = None
         self._embedding_service = embedding_svc or EmbeddingService()
         self._write_lock = threading.Lock()
+        self._records_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}  # (timestamp, records)
 
     def _get_client(self) -> Any | None:
         if self._client is not None:
@@ -97,27 +99,40 @@ class ChromaService:
                 "message": f"Chroma 连接异常：{exc}",
             }
 
-    def get_collection_records(self, collection_name: str, limit: int = 10000) -> list[dict[str, Any]]:
+    def get_collection_records(self, collection_name: str, limit: int = 500, offset: int = 0, include_embeddings: bool = True) -> list[dict[str, Any]]:
+        # 短时缓存：5 秒内同一集合的请求复用结果，避免 records + 3d 双重查询 ChromaDB
+        cache_key = f"records:{collection_name}:{offset}:{limit}:{include_embeddings}"
+        cached = self._records_cache.get(cache_key)
+        if cached and (time.time() - cached[0]) < 5.0:
+            return cached[1]
+
         collection = self._get_collection(collection_name)
         if collection is None:
-            return SAMPLE_RECORDS[:limit]
+            result = SAMPLE_RECORDS[offset:offset + limit] if offset else SAMPLE_RECORDS[:limit]
+            if not include_embeddings:
+                result = [{k: v for k, v in r.items() if k != "embedding"} for r in result]
+            return result
 
-        data = collection.get(limit=limit, include=["documents", "metadatas", "embeddings"])
+        includes = ["documents", "metadatas"]
+        if include_embeddings:
+            includes.append("embeddings")
+        data = collection.get(limit=limit, offset=offset, include=includes)
         ids = data.get("ids") or []
         documents = _safe_sequence(data.get("documents"))
         metadatas = _safe_sequence(data.get("metadatas"))
-        embeddings = _safe_sequence(data.get("embeddings"))
+        embeddings = _safe_sequence(data.get("embeddings")) if include_embeddings else []
 
         records = []
         for index, item_id in enumerate(ids):
-            records.append(
-                {
-                    "id": item_id,
-                    "document": _safe_get(documents, index, ""),
-                    "metadata": _safe_get(metadatas, index, {}) or {},
-                    "embedding": _safe_embedding(_safe_get(embeddings, index, [])),
-                }
-            )
+            rec = {
+                "id": item_id,
+                "document": _safe_get(documents, index, ""),
+                "metadata": _safe_get(metadatas, index, {}) or {},
+            }
+            if include_embeddings:
+                rec["embedding"] = _safe_embedding(_safe_get(embeddings, index, []))
+            records.append(rec)
+        self._records_cache[cache_key] = (time.time(), records)
         return records
 
     def get_collection_display_name(self, collection_name: str) -> str:
@@ -131,9 +146,10 @@ class ChromaService:
         except Exception:
             return collection_name
 
-    def get_3d_points(self, collection_name: str) -> list[dict[str, Any]]:
+    def get_3d_points(self, collection_name: str, max_pca_samples: int = 2000) -> list[dict[str, Any]]:
         records = self.get_collection_records(collection_name)
-        coords = project_to_3d([record.get("embedding", []) for record in records])
+        embeddings = [record.get("embedding", []) for record in records]
+        coords = project_to_3d(embeddings, max_samples=max_pca_samples)
         points = []
         for record, point in zip(records, coords):
             points.append(
