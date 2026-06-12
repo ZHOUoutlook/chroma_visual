@@ -20,7 +20,7 @@ class MineruService:
         self.mineru_api = MineruApiClient()
         self.embedding_service = embedding_svc or EmbeddingService()
 
-    def list_documents(self) -> list[dict[str, Any]]:
+    def list_documents(self,collection_name:str = None) -> list[dict[str, Any]]:
         files = self._json_files()
         if not files:
             return SAMPLE_DOCUMENTS
@@ -28,33 +28,27 @@ class MineruService:
         documents = []
         for path in files:
             data = self._read_json(path)
-            pages = self._extract_pages(data)
+            document = data.get("document") or {}
             chunks_list = data.get("chunks") or data.get("result", {}).get("chunks") or []
             total = len(chunks_list)
-            embedded = sum(1 for c in chunks_list if c.get("has_embedding"))
-            indexed = sum(1 for c in chunks_list if c.get("in_chroma"))
+            if collection_name:
+                embedded = sum(1 for c in chunks_list if collection_name in (c.get("collections") or []))
+            else:
+                embedded = 0
             documents.append(
                 {
-                    "id": path.stem,
-                    "file_name": data.get("file_name") or data.get("filename") or path.name,
-                    "file_type": data.get("file_type") or path.suffix.lstrip(".") or "json",
-                    "file_url": data.get("file_url", ""),
-                    "pages": len(pages),
-                    "uploaded_at": data.get("uploaded_at", ""),
-                    "ocr_status": "done",
-                    "chunk_status": str(total) if total > 0 else "0",
+                    "id": document["id"],
+                    "file_name": document["file_name"],
+                    "file_type": document["file_type"],
+                    "file_url": document["file_url"],
+                    "pages": document["pages"],
+                    "uploaded_at": document["uploaded_at"],
+                    "chunk_status": document["chunk_status"],
                     "embedding_status": f"{embedded}/{total}" if total > 0 else "0",
-                    "ingest_status": f"{indexed}/{total}" if total > 0 else "0",
-                    "error": "",
+                    "ingest_status": "no" if embedded == 0 else f"doing",
                 }
             )
         return documents
-
-    def get_document(self, document_id: str) -> dict[str, Any] | None:
-        for document in self.list_documents():
-            if document["id"] == document_id:
-                return document
-        return None
 
     def get_pages(self, document_id: str) -> list[dict[str, Any]]:
         data = self._document_json(document_id)
@@ -64,35 +58,6 @@ class MineruService:
 
     def get_native_result(self, document_id: str) -> dict[str, Any]:
         return self._document_json(document_id) or {}
-
-    def get_ocr_blocks(self, document_id: str, page_no: int) -> list[dict[str, Any]]:
-        for page in self.get_pages(document_id):
-            if int(page.get("page_no", 0)) == page_no:
-                return page.get("blocks", [])
-        return []
-
-    def get_structure(self, document_id: str) -> dict[str, Any]:
-        pages = self.get_pages(document_id)
-        children = []
-        for page in pages:
-            children.append(
-                {
-                    "id": f"page-{page['page_no']}",
-                    "label": f"第 {page['page_no']} 页",
-                    "type": "page",
-                    "children": [
-                        {
-                            "id": block["id"],
-                            "label": block.get("text", block["id"])[:36],
-                            "type": block.get("type", "block"),
-                            "page_no": page["page_no"],
-                            "chunk_ids": block.get("chunk_ids", []),
-                        }
-                        for block in page.get("blocks", [])
-                    ],
-                }
-            )
-        return {"id": document_id, "label": document_id, "type": "document", "children": children}
 
     def get_chunks(self, document_id: str) -> list[dict[str, Any]]:
         data = self._document_json(document_id)
@@ -114,20 +79,10 @@ class MineruService:
                         "id": record["id"],
                         "text": record["document"],
                         "metadata": record["metadata"],
-                        "token_count": len(record["document"]),
-                        "overlap": "",
-                        "has_embedding": bool(record.get("embedding")),
-                        "in_chroma": True,
+                        "collections": ["sample_knowledge_base"] if record.get("embedding") else [],
                     }
                 )
         return chunks
-
-    def get_chunk(self, chunk_id: str) -> dict[str, Any] | None:
-        for document in self.list_documents():
-            for chunk in self.get_chunks(document["id"]):
-                if chunk["id"] == chunk_id:
-                    return chunk
-        return None
 
     @staticmethod
     def _is_table_text(text: str) -> bool:
@@ -172,6 +127,16 @@ class MineruService:
         return result
 
     def embed_chunks(self, document_id: str, chunk_ids: list[str], collection: str, chroma_svc: Any) -> dict[str, Any] | None:
+        """将选中的 chunk 做句子切分、向量化，写入 ChromaDB 指定集合。
+        
+        流程：
+        1. 找到文档 JSON 文件
+        2. 过滤：跳过已在该集合中嵌入过的 chunk（从 chunk.collections 判断，无需查 ChromaDB）
+        3. 对未嵌入的 chunk 切句（表格整段保留，普通文本按中英文标点切分）
+        4. 生成 embedding 向量并写入 ChromaDB
+        5. 更新本地 JSON：chunk.collections 追加集合名，document.collections 记录映射
+        """
+        # ── 1. 查找文档 JSON 文件 ──
         json_path = None
         data = None
         for path in self._json_files():
@@ -182,7 +147,8 @@ class MineruService:
 
         if data is None:
             return None
-
+        
+        # ── 2. 构建 chunk 索引 ──
         chunks = data.get("chunks", [])
         chunk_map = {c["id"]: c for c in chunks}
 
@@ -190,16 +156,17 @@ class MineruService:
         skipped = 0
         not_found = 0
 
-        already_embedded = set(chroma_svc.get_embedded_chunk_ids(collection, document_id))
+        # ── 3. 过滤：跳过已嵌入当前集合的 chunk ──
         for cid in chunk_ids:
             chunk = chunk_map.get(cid)
             if chunk is None:
-                not_found += 1
-            elif cid in already_embedded:
-                skipped += 1
+                not_found += 1  # chunk_id 在文档中不存在
+            elif collection in (chunk.get("collections") or []):
+                skipped += 1    # 已嵌入当前集合，跳过
             else:
-                to_embed.append(chunk)
+                to_embed.append(chunk)  # 需要嵌入
 
+        # ── 4. 句子切分 + 向量化 + 写入 ChromaDB ──
         total_sentences = 0
         embedded_count = 0
         if to_embed:
@@ -211,12 +178,14 @@ class MineruService:
                 chunk_text = chunk["text"]
                 chunk_meta = chunk.get("metadata", {})
                 if self._is_table_text(chunk_text):
+                    # 表格文本保持整段，不切句
                     sentence_id = f"{document_id}_{chunk['id']}_sent_0000"
                     all_ids.append(sentence_id)
                     all_documents.append(chunk_text)
                     all_metadatas.append({**chunk_meta, "sentence_index": 0})
                     total_sentences += 1
                 else:
+                    # 普通文本按中英文标点切句
                     sentences = self._split_sentences(chunk_text)
                     for idx, sentence in enumerate(sentences):
                         sentence_id = f"{document_id}_{chunk['id']}_sent_{idx:04d}"
@@ -230,22 +199,50 @@ class MineruService:
                         total_sentences += 1
 
             if all_ids:
+                # 生成 embedding 向量
                 all_embeddings = self.embedding_service.embed(all_documents)
+                # 写入 ChromaDB
                 success = chroma_svc.add_to_collection(collection, all_ids, all_documents, all_metadatas, all_embeddings)
                 if success:
+                    # ── 5. 更新本地 JSON：标记 chunk 和文档的集合归属 ──
                     for c in to_embed:
-                        c["has_embedding"] = True
-                        c["in_chroma"] = True
+                        cols = c.get("collections")
+                        if not isinstance(cols, list):
+                            cols = []
+                            c["collections"] = cols
+                        if collection not in cols:
+                            cols.append(collection)
                     embedded_count = len(to_embed)
+
+                    # 获取集合的显示名称
+                    display_name = collection
+                    try:
+                        display_name = chroma_svc.get_collection_display_name(collection)
+                    except Exception:
+                        pass
+
+                    # 更新文档级集合映射
+                    doc_info = data.get("document")
+                    if doc_info is None:
+                        doc_info = {}
+                        data["document"] = doc_info
+
+                    doc_collections = doc_info.get("collections")
+                    if not isinstance(doc_collections, dict):
+                        doc_collections = {}
+                    doc_collections[collection] = display_name
+                    doc_info["collections"] = doc_collections
+
+                    # 持久化到 JSON 文件
                     with json_path.open("w", encoding="utf-8") as f:
                         json.dump(data, f, ensure_ascii=False, indent=2)
 
         return {
-            "embedded": embedded_count,
-            "sentences": total_sentences,
-            "skipped": skipped,
-            "not_found": not_found,
-            "total": len(chunk_ids),
+            "embedded": embedded_count,   # 本次新嵌入的 chunk 数
+            "sentences": total_sentences, # 生成的句子向量数
+            "skipped": skipped,           # 已存在跳过的 chunk 数
+            "not_found": not_found,       # 未找到的 chunk_id 数
+            "total": len(chunk_ids),      # 请求处理的 chunk 总数
         }
 
     def upload_and_parse(self, source_path: Path, original_name: str) -> dict[str, Any]:
@@ -287,14 +284,11 @@ class MineruService:
             or parsed.get("uploaded_at")
             or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
         )
-
-        page_pdf_url = parsed.get("page_pdf_url") or ""
+        
         markdown_content = native_json.get("markdown_content") or ""
 
         total_chunks = len(chunks)
-        embedded = sum(1 for c in chunks if c.get("has_embedding"))
-        indexed = sum(1 for c in chunks if c.get("in_chroma"))
-
+        
         result: dict[str, Any] = {
             "document": {
                 "id": document_id,
@@ -305,20 +299,13 @@ class MineruService:
                 "uploaded_at": uploaded_at,
                 "ocr_status": "done",
                 "chunk_status": str(total_chunks) if total_chunks > 0 else "0",
-                "embedding_status": f"{embedded}/{total_chunks}" if total_chunks > 0 else "0",
-                "ingest_status": f"{indexed}/{total_chunks}" if total_chunks > 0 else "0",
-            },
-            "file_name": native_json.get("file_name") or original_name,
-            "file_type": native_json.get("file_type") or "pdf",
-            "uploaded_at": uploaded_at,
-            "pages": pages,
+                "collections": {},
+            },  # 用于管理文档
+            "pages": pages,    #用于文档可视化
             "mineru_task": {
                 "batch_id": batch_id,
                 "raw_result": raw_result,
             },
-            "id": document_id,
-            "file_url": file_url,
-            "page_pdf_url": page_pdf_url,
             "chunks": chunks,
             "parse_mode": "mineru-api",
             "mineru_api_configured": bool(self.settings.mineru_api_key),
@@ -328,6 +315,86 @@ class MineruService:
             result["markdown_content"] = markdown_content
         return result
 
+
+    def repair_document_data(self, chroma_svc: Any) -> dict[str, Any]:
+        """修正所有文档 JSON 中的 collections 数据，以 ChromaDB 实际状态为准。
+
+        遍历每个文档 JSON 文件，对每个 ChromaDB 集合查询该文档实际已嵌入的 chunk，
+        然后更新 chunks[].collections 和 document.collections，防止数据偏移。
+        """
+        json_files = self._json_files()
+        if not json_files:
+            return {"repaired": 0, "total_documents": 0, "details": [], "message": "没有找到文档 JSON 文件"}
+
+        # 获取所有 ChromaDB 集合（排除前端示例集合）
+        collections = chroma_svc.list_collections()
+        chroma_collections = [c for c in collections if c.get("source") == "chroma"]
+
+        repaired_count = 0
+        details: list[dict[str, Any]] = []
+
+        for path in json_files:
+            data = self._read_json(path)
+            document_id = path.stem
+            chunks = data.get("chunks", [])
+            if not chunks:
+                continue
+
+            changed = False
+            chunk_map = {c["id"]: c for c in chunks}
+            new_doc_collections: dict[str, str] = {}
+
+            for col in chroma_collections:
+                col_name = col["name"]
+                col_display = col.get("display_name", col_name)
+
+                # 从 ChromaDB 查询该文档在此集合中实际存在的 chunk_id
+                actual_chunk_ids = chroma_svc.get_chunk_ids_for_document(col_name, document_id)
+                if not actual_chunk_ids:
+                    continue
+
+                new_doc_collections[col_name] = col_display
+
+                # 逐 chunk 修正 collections 列表
+                for cid, chunk in chunk_map.items():
+                    cols = chunk.get("collections")
+                    if not isinstance(cols, list):
+                        cols = []
+                        chunk["collections"] = cols
+
+                    if cid in actual_chunk_ids:
+                        if col_name not in cols:
+                            cols.append(col_name)
+                            changed = True
+                    else:
+                        if col_name in cols:
+                            cols.remove(col_name)
+                            changed = True
+
+            # 修正文档级 collections 映射
+            doc_info = data.get("document")
+            if doc_info is not None:
+                old_cols = doc_info.get("collections") or {}
+                if old_cols != new_doc_collections:
+                    doc_info["collections"] = new_doc_collections
+                    changed = True
+
+            if changed:
+                with path.open("w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                repaired_count += 1
+                details.append({
+                    "document_id": document_id,
+                    "file_name": (data.get("document") or {}).get("file_name", ""),
+                    "collections": new_doc_collections,
+                })
+
+        return {
+            "repaired": repaired_count,
+            "total_documents": len(json_files),
+            "details": details,
+            "message": f"已修正 {repaired_count} 个文档的 collections 数据",
+        }
     def _json_files(self) -> list[Path]:
         data_dir = self.settings.mineru_data_dir
         if not data_dir.exists():
@@ -385,13 +452,10 @@ class MineruService:
                 image_url = ""
                 width, height = self._estimate_page_size(blocks, width, height)
 
-            page_file_url = raw_page.get("file_url") or file_url or page_pdf_url
-
             page: dict[str, Any] = {
                 "page_no": page_no,
                 "width": int(width),
                 "height": int(height),
-                "file_url": page_file_url,
                 "blocks": blocks,
             }
             if image_url:
@@ -484,16 +548,13 @@ class MineruService:
         text = self._extract_block_text(block)
 
         block_id = str(block.get("id") or f"mineru_block_{index:03d}")
-        chunk_id = f"mineru_block_{index:03d}"
-
+        
         return {
             "id": block_id,
             "type": block.get("type") or block.get("category") or block.get("layout_type") or "paragraph",
             "text": text,
             "bbox": bbox[:4],
             "confidence": block.get("confidence") or block.get("score") or None,
-            "chunk_ids": [chunk_id],
-            "raw": block,
         }
 
     def _chunks_from_pages(self, pages: list[dict[str, Any]], original_name: str, document_id: str) -> list[dict[str, Any]]:
@@ -504,29 +565,17 @@ class MineruService:
                 text = str(block.get("text") or "").strip()
                 if not text:
                     continue
-
-                chunk_ids = block.get("chunk_ids") or []
-                chunk_id = str(chunk_ids[0]) if chunk_ids else ""
-                if not chunk_id:
-                    continue
-
-                block["id"] = block.get("id") or f"mineru_block_{chunk_id.split('_')[-1]}"
+                block_id = block.get("id")
 
                 chunks.append({
-                    "id": chunk_id,
+                    "id": block_id,
                     "text": text,
                     "metadata": {
                         "source": original_name,
                         "page": page_no,
-                        "chunk_id": chunk_id,
                         "document_id": document_id,
-                        "block_id": block["id"],
-                        "parse_mode": "mineru-api",
                     },
-                    "token_count": len(text),
-                    "overlap": "",
-                    "has_embedding": False,
-                    "in_chroma": False,
+                    "collections": []
                 })
         return chunks
 

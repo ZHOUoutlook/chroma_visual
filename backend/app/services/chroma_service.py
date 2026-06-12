@@ -120,24 +120,16 @@ class ChromaService:
             )
         return records
 
-    def get_collection_stats(self, collection_name: str) -> dict[str, Any]:
-        records = self.get_collection_records(collection_name)
-        metadata_keys = sorted(
-            {key for record in records for key in (record.get("metadata") or {}).keys()}
-        )
-        dimension = len(records[0]["embedding"]) if records and records[0].get("embedding") else 0
-        sources = {}
-        for record in records:
-            source = (record.get("metadata") or {}).get("source", "unknown")
-            sources[source] = sources.get(source, 0) + 1
-
-        return {
-            "name": collection_name,
-            "count": len(records),
-            "embedding_dimension": dimension,
-            "metadata_keys": metadata_keys,
-            "sources": sources,
-        }
+    def get_collection_display_name(self, collection_name: str) -> str:
+        """Return the display_name of a collection, falling back to collection_name."""
+        collection = self._get_collection(collection_name)
+        if collection is None:
+            return collection_name
+        try:
+            meta = getattr(collection, "metadata", None) or {}
+            return meta.get("display_name", collection_name)
+        except Exception:
+            return collection_name
 
     def get_3d_points(self, collection_name: str) -> list[dict[str, Any]]:
         records = self.get_collection_records(collection_name)
@@ -182,11 +174,39 @@ class ChromaService:
         except Exception:
             return None
 
-    def get_embedded_chunk_ids(self, collection_name: str, document_id: str) -> list[str]:
-        """Return chunk IDs that have embeddings in the given collection for the given document."""
+    # def get_embedded_chunk_ids(self, collection_name: str, document_id: str) -> list[str]:
+    #     """Return chunk IDs that have embeddings in the given collection for the given document."""
+    #     collection = self._get_collection(collection_name)
+    #     if collection is None:
+    #         return []
+
+    #     try:
+    #         data = collection.get(
+    #             where={"document_id": document_id},
+    #             include=["metadatas"],
+    #         )
+    #     except Exception:
+    #         return []
+
+    #     chunk_ids: set[str] = set()
+    #     for metadata in _safe_sequence(data.get("metadatas")):
+    #         if isinstance(metadata, dict):
+    #             cid = metadata.get("chunk_id")
+    #             if cid:
+    #                 chunk_ids.add(str(cid))
+
+    #     return sorted(chunk_ids)
+
+
+    def get_chunk_ids_for_document(self, collection_name: str, document_id: str) -> set[str]:
+        """返回指定集合中属于某文档的所有 chunk_id（以 ChromaDB 实际数据为准）。
+        
+        ChromaDB 中句子 ID 格式为 {document_id}_{chunk_id}_sent_XXXX，
+        通过解析 ID 提取 chunk_id。
+        """
         collection = self._get_collection(collection_name)
         if collection is None:
-            return []
+            return set()
 
         try:
             data = collection.get(
@@ -194,17 +214,20 @@ class ChromaService:
                 include=["metadatas"],
             )
         except Exception:
-            return []
+            return set()
 
         chunk_ids: set[str] = set()
-        for metadata in _safe_sequence(data.get("metadatas")):
-            if isinstance(metadata, dict):
-                cid = metadata.get("chunk_id")
-                if cid:
-                    chunk_ids.add(str(cid))
+        ids = data.get("ids") or []
+        prefix = document_id + "_"
+        for record_id in ids:
+            rid = str(record_id)
+            if rid.startswith(prefix):
+                rest = rid[len(prefix):]
+                sent_idx = rest.rfind("_sent_")
+                if sent_idx > 0:
+                    chunk_ids.add(rest[:sent_idx])
 
-        return sorted(chunk_ids)
-
+        return chunk_ids
     def delete_records(self, collection_name: str, record_ids: list[str]) -> bool:
         with self._write_lock:
             client = self._get_client()

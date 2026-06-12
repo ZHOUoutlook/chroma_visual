@@ -22,25 +22,30 @@ data/      示例 MinerU 解析数据
 
 项目采用按需加载，减少不必要的接口请求：
 
-| 页面 | 调用的接口 |
-|------|-----------|
-| 知识库总览 | `/api/chroma/collections` + `/api/documents` + `/api/chroma/status` |
-| OCR 解析 | `/api/documents/{id}/native`（含 pages） |
-| Chunk 切分 | `/api/documents/{id}/chunks` + `/api/chroma/.../embedded-chunks/{id}` |
-| Chroma 内容 / 3D 空间 / 查询 | 启动时后台静默预取 records + 3D embeddings，切换页面不重复请求 |
-| Embedding | `POST /api/documents/{id}/embedding` → 完成后刷新 embedded-chunks + 后台刷新 records/3D |
+| 页面                         | 调用的接口                                                                                 |
+| ---------------------------- | ------------------------------------------------------------------------------------------ |
+| 知识库总览                   | `/api/chroma/collections` + `/api/documents` + `/api/chroma/status`                  |
+| OCR 解析                     | `/api/documents/{id}/native`（含 pages）                                                 |
+| Chunk 切分                   | `/api/documents/{id}/chunks` + `/api/chroma/.../embedded-chunks/{id}`                  |
+| Chroma 内容 / 3D 空间 / 查询 | 启动时后台静默预取 records + 3D embeddings，切换页面不重复请求                             |
+| Embedding                    | `POST /api/documents/{id}/embedding` → 完成后刷新 embedded-chunks + 后台刷新 records/3D |
 
 ## 运行前的配置说明
+
 执行指令，将初始化配置
+
 ```powershell
 copy ..\.env.example ..\.env
 ```
+
 随后按下面配置.env文件
+
 ### 嵌入模型配置
 
 嵌入服务仅支持 API 方式（不再使用本地 SentenceTransformer）：
 
 `.env` 配置：
+
 ```text
 EMBEDDING_API_BASE_URL=http://your-embedding-service:port
 EMBEDDING_API_KEY=sk-your-key
@@ -135,6 +140,7 @@ chmod +x scripts/start-frontend.sh
 ```
 
 默认访问：
+
 ```text
 http://localhost:5173
 ```

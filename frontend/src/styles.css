@@ -1,4 +1,4 @@
-﻿* {
+* {
   box-sizing: border-box;
 }
 
@@ -367,7 +367,16 @@ button {
   }
 }
 
-.table-wrap {
+
+.table-wrap-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.table-wrap-header h2 {
+  margin: 0;
+}.table-wrap {
   overflow: auto;
 }
 
@@ -893,7 +902,16 @@ th {
   color: #111827;
 }
 
-.md-table-wrap {
+.md
+.table-wrap-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.table-wrap-header h2 {
+  margin: 0;
+}.table-wrap {
   overflow-x: auto;
 }
 

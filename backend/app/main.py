@@ -1,7 +1,7 @@
-﻿import shutil
+import shutil
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,24 +38,6 @@ def shutdown() -> None:
     chroma_service.close()
 
 
-@app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.get("/api/mineru/status")
-def mineru_status():
-    settings = mineru_service.settings
-    return {
-        "configured": bool(settings.mineru_api_key),
-        "api_base_url": settings.mineru_api_base_url,
-        "poll_timeout_seconds": settings.mineru_poll_timeout_seconds,
-        "poll_interval_seconds": settings.mineru_poll_interval_seconds,
-        "upload_dir": str(settings.upload_dir),
-        "mineru_data_dir": str(settings.mineru_data_dir),
-    }
-
-
 @app.post("/api/documents/upload")
 async def upload_document(file: UploadFile = File(...)):
     suffix = ""
@@ -79,31 +61,9 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @app.get("/api/documents")
-def list_documents():
-    return mineru_service.list_documents()
-
-
-@app.get("/api/documents/{document_id}")
-def get_document(document_id: str):
-    document = mineru_service.get_document(document_id)
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
-    return document
-
-
-@app.get("/api/documents/{document_id}/pages")
-def get_pages(document_id: str):
-    return mineru_service.get_pages(document_id)
-
-
-@app.get("/api/documents/{document_id}/pages/{page_no}/ocr-blocks")
-def get_ocr_blocks(document_id: str, page_no: int):
-    return mineru_service.get_ocr_blocks(document_id, page_no)
-
-
-@app.get("/api/documents/{document_id}/structure")
-def get_structure(document_id: str):
-    return mineru_service.get_structure(document_id)
+def list_documents(collection: str = ""):
+    return mineru_service.list_documents(collection if collection else None)
+    
 
 
 @app.get("/api/documents/{document_id}/native")
@@ -117,14 +77,6 @@ def get_native_result(document_id: str):
 @app.get("/api/documents/{document_id}/chunks")
 def get_chunks(document_id: str):
     return mineru_service.get_chunks(document_id)
-
-
-@app.get("/api/chunks/{chunk_id}")
-def get_chunk(chunk_id: str):
-    chunk = mineru_service.get_chunk(chunk_id)
-    if chunk is None:
-        raise HTTPException(status_code=404, detail="Chunk not found")
-    return chunk
 
 
 @app.post("/api/documents/{document_id}/embedding")
@@ -169,11 +121,6 @@ def get_chroma_status():
     return chroma_service.status()
 
 
-@app.get("/api/chroma/collections/{collection_name}/stats")
-def get_collection_stats(collection_name: str):
-    return chroma_service.get_collection_stats(collection_name)
-
-
 @app.get("/api/chroma/collections/{collection_name}/records")
 def get_collection_records(collection_name: str, limit: int = 10000):
     return chroma_service.get_collection_records(collection_name, limit)
@@ -198,9 +145,9 @@ def clear_collection(collection_name: str):
     return {"cleared": count}
 
 
-@app.get("/api/chroma/collections/{collection_name}/embedded-chunks/{document_id}")
-def get_embedded_chunk_ids(collection_name: str, document_id: str):
-    return chroma_service.get_embedded_chunk_ids(collection_name, document_id)
+# @app.get("/api/chroma/collections/{collection_name}/embedded-chunks/{document_id}")
+# def get_embedded_chunk_ids(collection_name: str, document_id: str):
+#     return chroma_service.get_embedded_chunk_ids(collection_name, document_id)
 
 
 @app.get("/api/chroma/collections/{collection_name}/embeddings/3d")
@@ -208,10 +155,11 @@ def get_3d_embeddings(collection_name: str):
     return chroma_service.get_3d_points(collection_name)
 
 
-@app.post("/api/chroma/collections/{collection_name}/query")
-def query_collection(collection_name: str, payload: QueryRequest):
-    return chroma_service.query(collection_name, payload.query, payload.top_k, payload.where)
 
+@app.post("/api/admin/repair-collections")
+def repair_collections():
+    """修正所有文档 JSON 中的 collections 数据，以 ChromaDB 实际向量数据为准，防止数据偏移。"""
+    return mineru_service.repair_document_data(chroma_service)
 
 @app.post("/api/query")
 def query(payload: QueryRequest):

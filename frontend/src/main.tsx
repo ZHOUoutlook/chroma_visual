@@ -1,4 +1,4 @@
-﻿import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -18,6 +18,7 @@ import {
   Layers3,
   Loader2,
   RefreshCw,
+  Wrench,
   Search,
   Trash2,
   UploadCloud,
@@ -120,8 +121,7 @@ const fallbackChunks: Chunk[] = fallbackRecords.slice(2, 4).map((record) => ({
   text: record.document,
   metadata: record.metadata,
   token_count: record.document.length,
-  has_embedding: true,
-  in_chroma: true,
+  collections: ["sample_knowledge_base"],
 }));
 
 type Collection = {
@@ -197,8 +197,7 @@ type Chunk = {
   text: string;
   metadata: Record<string, unknown>;
   token_count: number;
-  has_embedding: boolean;
-  in_chroma: boolean;
+  collections?: string[];
 };
 
 type QueryResult = {
@@ -288,14 +287,10 @@ function App() {
   const [selectedChunkIds, setSelectedChunkIds] = useState<Set<string>>(new Set());
   const [embeddingBusy, setEmbeddingBusy] = useState(false);
   const [embeddingMessage, setEmbeddingMessage] = useState("");
-  const [embeddedChunkIds, setEmbeddedChunkIds] = useState<Set<string>>(new Set());
 
-  const preloadDoneRef = useRef(false);
-
-  // 启动时后台静默预取 records 和 3D embeddings（仅一次）
+  // 切换集合时加载 records 和 3D embeddings（所有页面通用）
   useEffect(() => {
-    if (!selectedCollection || preloadDoneRef.current) return;
-    preloadDoneRef.current = true;
+    if (!selectedCollection) return;
     const timer = setTimeout(() => {
       void loadCollection(selectedCollection);
     }, 0);
@@ -311,21 +306,33 @@ function App() {
       api<Chunk[]>(`/api/documents/${selectedDocument}/chunks`)
         .then((data) => setChunks(data))
         .catch(() => setChunks(fallbackChunks));
-      if (selectedCollection) {
-        api<string[]>(`/api/chroma/collections/${selectedCollection}/embedded-chunks/${selectedDocument}`)
-          .then((ids) => setEmbeddedChunkIds(new Set(ids)))
-          .catch(() => setEmbeddedChunkIds(new Set()));
-      }
-    } else {
-      setEmbeddedChunkIds(new Set());
     }
-  }, [activeView, selectedDocument, selectedCollection]);
+  }, [activeView, selectedDocument]);
+
+  // Derive embedded chunk IDs from chunk.collections field
+  const embeddedChunkIds = useMemo(() => {
+    if (!selectedCollection) return new Set<string>();
+    return new Set(
+      chunks.filter((c) => (c.collections || []).includes(selectedCollection)).map((c) => c.id)
+    );
+  }, [chunks, selectedCollection]);
 
   // 进入知识库总览时刷新列表
   useEffect(() => {
     if (activeView !== "overview") return;
     void loadInitialData();
   }, [activeView]);
+
+  // 切换集合时仅刷新文档处理状态
+  useEffect(() => {
+    if (activeView !== "overview" || !apiConnected) return;
+    api<DocumentItem[]>(`/api/documents?collection=${encodeURIComponent(selectedCollection)}`)
+      .then((docs) => {
+        setDocuments(docs);
+        if (docs[0]) setSelectedDocument(docs[0].id);
+      })
+      .catch(() => {});
+  }, [selectedCollection]);
 
   const selectedPage = useMemo(
     () => pages.find((page) => page.page_no === selectedPageNo) ?? pages[0],
@@ -339,17 +346,12 @@ function App() {
 
   async function loadInitialData() {
     try {
-      const [collectionList, documentList] = await Promise.all([
-        api<Collection[]>("/api/chroma/collections"),
-        api<DocumentItem[]>("/api/documents"),
-      ]);
+      const collectionList = await api<Collection[]>("/api/chroma/collections");
       const liveChromaStatus = await api<ChromaStatus>("/api/chroma/status");
       setCollections(collectionList);
-      setDocuments(documentList);
       setApiConnected(true);
       setChromaStatus(liveChromaStatus);
-      if (collectionList[0]) setSelectedCollection(collectionList[0].name);
-      if (documentList[0]) setSelectedDocument(documentList[0].id);
+      if (collectionList[0] && !selectedCollection) setSelectedCollection(collectionList[0].name);
       setStatus(liveChromaStatus.connected ? "后端和 Chroma 已连接" : liveChromaStatus.message);
     } catch (error) {
       setCollections(fallbackCollections);
@@ -382,7 +384,7 @@ function App() {
   async function loadDocument(documentId: string) {
     try {
       const native = await api<any>(`/api/documents/${documentId}/native`);
-      const fallbackFileUrl: string = native.file_url || "";
+      const fallbackFileUrl: string = (native.document && native.document.file_url) || native.file_url || "";
       const pageList: OcrPage[] = (native.pages || []).map((p: any) => ({
         ...p,
         file_url: p.file_url || fallbackFileUrl,
@@ -444,6 +446,17 @@ function App() {
     await loadCollection(selectedCollection);
   }
 
+
+  async function handleRepairData() {
+    setStatus("正在修复 collections 数据...");
+    try {
+      const result = await api<any>("/api/admin/repair-collections", { method: "POST" });
+      setStatus(result.message || "修复完成");
+      await loadInitialData();
+    } catch (error) {
+      setStatus(`修复失败：${String(error)}`);
+    }
+  }
   async function handleClearCollection() {
     if (!selectedCollection) return;
     await api(`/api/chroma/collections/${selectedCollection}/clear`, { method: "DELETE" });
@@ -550,12 +563,10 @@ function App() {
         `已处理 ${result.embedded} 个 chunk，生成 ${result.sentences} 个句子向量，跳过 ${result.skipped} 个${result.not_found > 0 ? `，未找到 ${result.not_found} 个` : ""}`,
       );
       setSelectedChunkIds(new Set());
-      // Refresh embedded chunk IDs from the collection
-      if (selectedCollection) {
-        api<string[]>(`/api/chroma/collections/${selectedCollection}/embedded-chunks/${selectedDocument}`)
-          .then((ids) => setEmbeddedChunkIds(new Set(ids)))
-          .catch(() => {});
-      }
+      // 刷新 chunk 列表，获取最新的 collections 字段
+      api<Chunk[]>('/api/documents/' + selectedDocument + '/chunks')
+        .then((data) => setChunks(data))
+        .catch(() => {});
       // 后台静默刷新 Chroma records 和 3D embeddings
       void loadCollection(selectedCollection);
     } catch (error) {
@@ -603,7 +614,7 @@ function App() {
             </span>
             <select value={selectedCollection} onChange={(event) => setSelectedCollection(event.target.value)}>
               {collections.map((collection) => (
-                <option key={collection.display_name || collection.name} value={collection.display_name || collection.name}>
+                <option key={collection.display_name || collection.name} value={collection.name}>
                   {collection.display_name || collection.name}
                 </option>
               ))}
@@ -618,7 +629,7 @@ function App() {
           </div>
         </header>
 
-        {activeView === "overview" && <Overview documents={documents} collections={collections} onCreateCollection={handleCreateCollection} onDeleteCollection={handleDeleteCollection} />}
+        {activeView === "overview" && <Overview documents={documents} collections={collections} onCreateCollection={handleCreateCollection} onDeleteCollection={handleDeleteCollection} onRepairData={() => void handleRepairData()} />}
         {activeView === "upload" && (
           <UploadView
             uploading={uploading}
@@ -743,7 +754,7 @@ function UploadView({
   );
 }
 
-function Overview({ documents, collections, onCreateCollection, onDeleteCollection }: { documents: DocumentItem[]; collections: Collection[]; onCreateCollection: (name: string) => void; onDeleteCollection: (name: string) => void }) {
+function Overview({ documents, collections, onCreateCollection, onDeleteCollection, onRepairData }: { documents: DocumentItem[]; collections: Collection[]; onCreateCollection: (name: string) => void; onDeleteCollection: (name: string) => void; onRepairData: () => void }) {
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
 
@@ -759,12 +770,15 @@ function Overview({ documents, collections, onCreateCollection, onDeleteCollecti
             </div>
           ))}
         </div>
+        <button className="primary" onClick={onRepairData} title="以 ChromaDB 实际数据修正 JSON 中的 collections" style={{ marginBottom: 12 }}>
+          <Wrench size={14} />
+          修复数据
+        </button>
         <Table
-          headers={["文件", "页数", "OCR", "Chunk", "Embedding", "入库"]}
+          headers={["文件", "页数", "Chunk", "Embedding", "入库"]}
           rows={documents.map((document) => [
             document.file_name,
             document.pages,
-            document.ocr_status,
             document.chunk_status,
             document.embedding_status,
             document.ingest_status,
