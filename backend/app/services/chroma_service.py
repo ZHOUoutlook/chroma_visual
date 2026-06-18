@@ -146,8 +146,44 @@ class ChromaService:
         except Exception:
             return collection_name
 
-    def get_3d_points(self, collection_name: str, max_pca_samples: int = 2000) -> list[dict[str, Any]]:
-        records = self.get_collection_records(collection_name)
+    def _find_cached_records(self, collection_name: str) -> list[dict[str, Any]] | None:
+        """查找 _records_cache 中该集合的任意缓存记录（5 秒内有效）。"""
+        now = time.time()
+        for cache_key, (ts, records) in self._records_cache.items():
+            if cache_key.startswith(f"records:{collection_name}:") and (now - ts) < 5.0:
+                return records
+        return None
+
+    def _enrich_with_embeddings(self, collection_name: str, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """为不含 embedding 的 records 补充 embedding 字段（仅查询 ChromaDB 的 embeddings）。"""
+        if not records:
+            return records
+        collection = self._get_collection(collection_name)
+        if collection is None:
+            return records
+        ids = [rec["id"] for rec in records]
+        try:
+            data = collection.get(ids=ids, include=["embeddings"])
+            emb_map: dict[str, list[float]] = {}
+            for rid, emb in zip(data.get("ids") or [], _safe_sequence(data.get("embeddings"))):
+                emb_map[str(rid)] = _safe_embedding(emb)
+            for rec in records:
+                rec["embedding"] = emb_map.get(rec["id"], [])
+        except Exception as exc:
+            print(f"[ChromaService] _enrich_with_embeddings failed: {type(exc).__name__}: {exc}")
+        return records
+
+    def get_3d_points(self, collection_name: str, max_pca_samples: int = 5000) -> list[dict[str, Any]]:
+        # 优先复用 records 接口的缓存数据，避免重复查询 ChromaDB
+        cached_records = self._find_cached_records(collection_name)
+        if cached_records is not None:
+            records = cached_records
+            # 缓存中无 embedding 时，仅补查 embedding
+            if records and "embedding" not in records[0]:
+                records = self._enrich_with_embeddings(collection_name, records)
+        else:
+            records = self.get_collection_records(collection_name, max_pca_samples)
+
         embeddings = [record.get("embedding", []) for record in records]
         coords = project_to_3d(embeddings, max_samples=max_pca_samples)
         points = []

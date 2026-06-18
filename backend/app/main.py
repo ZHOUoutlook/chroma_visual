@@ -1,4 +1,4 @@
-import shutil
+﻿import shutil
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Optional
@@ -122,7 +122,7 @@ def get_chroma_status():
 
 
 @app.get("/api/chroma/collections/{collection_name}/records")
-def get_collection_records(collection_name: str, limit: int = 500, offset: int = 0):
+def get_collection_records(collection_name: str, limit: int = 4000, offset: int = 0):
     return chroma_service.get_collection_records(collection_name, limit, offset, include_embeddings=False)
 
 
