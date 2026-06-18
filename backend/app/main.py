@@ -161,6 +161,7 @@ def repair_collections():
     """修正所有文档 JSON 中的 collections 数据，以 ChromaDB 实际向量数据为准，防止数据偏移。"""
     return mineru_service.repair_document_data(chroma_service)
 
+
 @app.post("/api/query")
 def query(payload: QueryRequest):
     return chroma_service.query(payload.collection, payload.query, payload.top_k, payload.where)

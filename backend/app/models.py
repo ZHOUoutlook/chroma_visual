@@ -23,4 +23,3 @@ class QueryResponse(BaseModel):
     query: str
     query_point: dict[str, float]
     results: list[VectorPoint]
-
